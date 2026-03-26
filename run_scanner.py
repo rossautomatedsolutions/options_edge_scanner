@@ -87,11 +87,11 @@ def _generate_credit_spreads(chain: pd.DataFrame) -> pd.DataFrame:
     chain = chain.copy()
     chain["expiration"] = pd.to_datetime(chain["expiration"], utc=True, errors="coerce")
 
-    for expiration, exp_frame in chain.groupby("expiration", sort=True):
+    for (ticker, expiration), exp_frame in chain.groupby(["ticker", "expiration"], sort=True):
         if pd.isna(expiration):
             continue
 
-        dte_days = (expiration.to_pydatetime() - now).total_seconds() / 86_400
+        dte_days = float((expiration.date() - now.date()).days)
         if dte_days < MIN_DTE_DAYS or dte_days > MAX_DTE_DAYS:
             continue
 
@@ -157,7 +157,7 @@ def _generate_credit_spreads(chain: pd.DataFrame) -> pd.DataFrame:
 
                     results.append(
                         {
-                            "ticker": exp_frame["ticker"].iloc[0],
+                            "ticker": ticker,
                             "expiration": expiration.tz_convert(None),
                             "dte_days": round(dte_days, 1),
                             "spread_type": spread_type,
