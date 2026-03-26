@@ -73,7 +73,8 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
     if strike_col is None or expiry_col is None or option_type_col is None:
         return pd.DataFrame(columns=_OUTPUT_COLUMNS)
 
-    ticker_col = _find_column(option_df.columns, ["ticker", "symbol", "underlying", "underlying_symbol"])
+    # Prefer true underlying identifiers; avoid contract-level symbols.
+    ticker_col = _find_column(option_df.columns, ["ticker", "underlying", "underlying_symbol"])
 
     price_col = _resolve_price_column(option_df)
     if price_col is None:
@@ -102,7 +103,7 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
     if ticker_col is not None:
         grouping_columns.insert(0, ticker_col)
 
-    for group_keys, chain_group in working.groupby(grouping_columns):
+    for group_keys, chain_group in working.groupby(grouping_columns, dropna=False):
         if ticker_col is None:
             ticker_value = None
             expiry_value = group_keys
