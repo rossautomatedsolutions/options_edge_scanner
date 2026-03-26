@@ -1,3 +1,5 @@
 """Data access layer for market and options datasets."""
 
-# TODO: Export public data-loading APIs.
+from .option_chain_loader import load_option_chain
+
+__all__ = ["load_option_chain"]
