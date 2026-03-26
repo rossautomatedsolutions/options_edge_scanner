@@ -8,6 +8,8 @@ import pandas as pd
 
 
 _OUTPUT_COLUMNS = [
+    "ticker",
+    "expiration",
     "spread_type",
     "strike_lower",
     "strike_upper",
@@ -71,6 +73,8 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
     if strike_col is None or expiry_col is None or option_type_col is None:
         return pd.DataFrame(columns=_OUTPUT_COLUMNS)
 
+    ticker_col = _find_column(option_df.columns, ["ticker", "symbol", "underlying", "underlying_symbol"])
+
     price_col = _resolve_price_column(option_df)
     if price_col is None:
         # Fall back to midpoint if bid/ask are available.
@@ -94,10 +98,19 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
 
     spreads: list[dict[str, float | str]] = []
 
-    for expiry, expiry_group in working.groupby(expiry_col):
-        _ = expiry
+    grouping_columns = [expiry_col]
+    if ticker_col is not None:
+        grouping_columns.insert(0, ticker_col)
+
+    for group_keys, chain_group in working.groupby(grouping_columns):
+        if ticker_col is None:
+            ticker_value = None
+            expiry_value = group_keys
+        else:
+            ticker_value, expiry_value = group_keys
+
         for side in ("call", "put"):
-            side_group = expiry_group[expiry_group[option_type_col] == side].sort_values(strike_col)
+            side_group = chain_group[chain_group[option_type_col] == side].sort_values(strike_col)
             if len(side_group) < 2:
                 continue
 
@@ -135,6 +148,8 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
 
                     spreads.append(
                         {
+                            "ticker": ticker_value,
+                            "expiration": expiry_value,
                             "spread_type": spread_type,
                             "strike_lower": strike_lower,
                             "strike_upper": strike_upper,
