@@ -1,3 +1,5 @@
 """Modeling layer for volatility and pricing components."""
 
-# TODO: Export model interfaces for scanner consumption.
+from options_edge_scanner.models.probability_estimator import estimate_probability_of_profit
+
+__all__ = ["estimate_probability_of_profit"]
