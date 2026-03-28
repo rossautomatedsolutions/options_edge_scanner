@@ -43,8 +43,22 @@ def estimate_probability_of_profit(spread_row: Mapping[str, Any]) -> float:
     - Profit probability is computed from spread breakeven as a one-sided tail event.
     """
     spot = _read_float(spread_row, "underlying_price", "spot_price", "spot", "stock_price")
-    lower_strike = _read_float(spread_row, "lower_strike", "short_put_strike", "put_strike")
-    upper_strike = _read_float(spread_row, "upper_strike", "short_call_strike", "call_strike")
+    lower_strike = _read_float(
+        spread_row,
+        "lower_strike",
+        "short_put_strike",
+        "put_strike",
+        "short_strike",
+        "long_strike",
+    )
+    upper_strike = _read_float(
+        spread_row,
+        "upper_strike",
+        "short_call_strike",
+        "call_strike",
+        "long_strike",
+        "short_strike",
+    )
     implied_vol = _read_float(spread_row, "implied_volatility", "iv")
     time_to_expiration = _resolve_time_to_expiration(spread_row)
     spread_type = str(spread_row.get("spread_type", "")).strip().lower()
@@ -74,19 +88,19 @@ def estimate_probability_of_profit(spread_row: Mapping[str, Any]) -> float:
         debit = _read_float(spread_row, "debit", "cost", "max_loss", "loss")
         breakeven = high - debit
         tail_direction = "below"
-    elif spread_type == "bull_put_credit":
+    elif spread_type in {"bull_put_credit", "put_credit"}:
         credit = _read_float(spread_row, "credit", "max_profit", "payoff")
         breakeven = high - credit
         tail_direction = "above"
-    elif spread_type == "bear_call_credit":
+    elif spread_type in {"bear_call_credit", "call_credit"}:
         credit = _read_float(spread_row, "credit", "max_profit", "payoff")
         breakeven = low + credit
         tail_direction = "below"
     else:
         raise ValueError(
             "Unsupported spread_type for probability_of_profit; "
-            "expected one of: bull_put_credit, bear_call_credit, "
-            "bull_call_debit, bear_put_debit"
+            "expected one of: bull_put_credit, put_credit, "
+            "bear_call_credit, call_credit, bull_call_debit, bear_put_debit"
         )
 
     if breakeven <= 0:

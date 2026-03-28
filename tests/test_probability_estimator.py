@@ -144,3 +144,33 @@ def test_near_expiration_behaves_like_step_function() -> None:
     assert above_tail_when_be_above_spot < 0.01
     assert below_tail_when_be_above_spot > 0.99
     assert below_tail_when_be_below_spot < 0.01
+
+
+@pytest.mark.parametrize(
+    ("spread_type", "short_strike", "long_strike", "credit", "expected_range"),
+    [
+        ("put_credit", 105.0, 95.0, 5.0, (0.4, 0.6)),
+        ("call_credit", 95.0, 105.0, 5.0, (0.4, 0.6)),
+    ],
+)
+def test_credit_spread_aliases_accept_scanner_strike_keys(
+    spread_type: str,
+    short_strike: float,
+    long_strike: float,
+    credit: float,
+    expected_range: tuple[float, float],
+) -> None:
+    """Scanner-style rows with short/long strikes should be supported."""
+    probability = estimate_probability_of_profit(
+        {
+            "underlying_price": SPOT_PRICE,
+            "short_strike": short_strike,
+            "long_strike": long_strike,
+            "implied_volatility": IV_20_PERCENT,
+            "time_to_expiration": ONE_MONTH,
+            "spread_type": spread_type,
+            "credit": credit,
+        }
+    )
+    low, high = expected_range
+    assert low <= probability <= high
