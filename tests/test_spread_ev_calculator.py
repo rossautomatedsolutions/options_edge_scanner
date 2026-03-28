@@ -40,6 +40,24 @@ class SpreadEVCalculatorTests(unittest.TestCase):
         expected = expected_gross - TRANSACTION_COST
         self.assertAlmostEqual(result["expected_value"], expected, places=10)
 
+    def test_supported_spread_accepts_scalar_probability(self) -> None:
+        spread = {
+            "spread_type": "bull_call_debit",
+            "strike_lower": 100,
+            "strike_upper": 110,
+            "cost": 3,
+            "max_profit": 7,
+        }
+
+        result = calculate_expected_value(spread, probability=0.6)
+
+        expected_gross = (0.6 * 7) + (0.4 * -3)
+        expected = expected_gross - TRANSACTION_COST
+        self.assertAlmostEqual(result["expected_value"], expected, places=10)
+        self.assertEqual(result["ev_method"], "breakeven_binary_mvp")
+        self.assertEqual(result["prob_win"], 0.6)
+        self.assertEqual(result["prob_loss"], 0.4)
+
     def test_breakeven_binary_ev_is_bound_by_max_profit_and_loss_before_cost(self) -> None:
         spread = {
             "spread_type": "bull_put_credit",

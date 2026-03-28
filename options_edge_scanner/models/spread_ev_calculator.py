@@ -154,13 +154,19 @@ def calculate_expected_value(
     """
     spread_type = str(spread_row.get("spread_type", "")).strip().lower()
     if spread_type in _SUPPORTED_SPREAD_TYPES:
-        if probability_weights is None:
+        if probability_weights is not None:
+            probs = _normalize_win_loss_probabilities(probability_weights)
+        elif probability is not None:
+            p = float(probability)
+            if p < -_EPSILON or p > 1.0 + _EPSILON:
+                raise ValueError("probability must be in [0, 1]")
+            p = min(max(p, 0.0), 1.0)
+            probs = {"win": p, "loss": 1.0 - p}
+        else:
             raise ValueError(
-                "probability_weights is required for supported spread types; "
-                "expected win/loss probabilities"
+                "probability or probability_weights is required for supported spread types"
             )
 
-        probs = _normalize_win_loss_probabilities(probability_weights)
         profile = _extract_spread_payoff_profile(spread_row)
 
         max_profit = float(profile["max_profit"])
