@@ -83,44 +83,59 @@ def _extract_vertical_payoff_profile(spread_row: Mapping[str, Any]) -> dict[str,
     if spread_type in {"call_vertical", "put_vertical"}:
         max_profit = _get_numeric_field(spread_row, "max_profit", "payoff")
         max_loss = _get_numeric_field(spread_row, "cost", "max_loss", "loss")
-        middle_pnl = (width / 2.0) - max_loss
+        if max_profit < -_EPSILON or max_loss < -_EPSILON:
+            raise ValueError("max_profit and max_loss must be non-negative")
+
+        # For verticals, endpoint PnL magnitudes must satisfy:
+        #   max_profit + max_loss == width
+        # We use a tolerance for floating-point quote arithmetic.
+        if abs((max_profit + max_loss) - width) > 1e-6:
+            raise ValueError(
+                "Inconsistent spread economics: expected max_profit + max_loss to equal strike width"
+            )
+
         if spread_type == "call_vertical":
             pnl_by_region = {
                 "below": -max_loss,
-                "between": middle_pnl,
                 "above": max_profit,
             }
         else:
             pnl_by_region = {
                 "below": max_profit,
-                "between": middle_pnl,
                 "above": -max_loss,
             }
     elif spread_type in {"call_credit", "put_credit"}:
         max_profit = _get_numeric_field(spread_row, "credit", "max_profit", "payoff")
         max_loss = _get_numeric_field(spread_row, "max_loss", "loss")
-        middle_pnl = max_profit - (width / 2.0)
+        if max_profit < -_EPSILON or max_loss < -_EPSILON:
+            raise ValueError("max_profit and max_loss must be non-negative")
+
+        if abs((max_profit + max_loss) - width) > 1e-6:
+            raise ValueError(
+                "Inconsistent spread economics: expected max_profit + max_loss to equal strike width"
+            )
+
         if spread_type == "call_credit":
             pnl_by_region = {
                 "below": max_profit,
-                "between": middle_pnl,
                 "above": -max_loss,
             }
         else:
             pnl_by_region = {
                 "below": -max_loss,
-                "between": middle_pnl,
                 "above": max_profit,
             }
     else:
         raise ValueError(f"Unsupported spread_type '{spread_type}' for vertical EV")
+
+    middle_pnl = 0.5 * (float(pnl_by_region["below"]) + float(pnl_by_region["above"]))
 
     return {
         "spread_type": spread_type,
         "max_profit": float(max_profit),
         "max_loss": float(max_loss),
         "pnl_below": float(pnl_by_region["below"]),
-        "pnl_between": float(pnl_by_region["between"]),
+        "pnl_between": float(middle_pnl),
         "pnl_above": float(pnl_by_region["above"]),
     }
 
@@ -128,6 +143,10 @@ def _extract_vertical_payoff_profile(spread_row: Mapping[str, Any]) -> dict[str,
 def _binary_expected_value(spread_row: Mapping[str, Any], probability: float) -> tuple[float, float]:
     """Backward-compatible 2-point EV approximation."""
     p = float(probability)
+    if p < -_EPSILON or p > 1.0 + _EPSILON:
+        raise ValueError("probability must be in [0, 1]")
+    p = min(max(p, 0.0), 1.0)
+
     payoff = _get_numeric_field(spread_row, "payoff", "max_profit", "credit")
     loss = _get_numeric_field(spread_row, "loss", "max_loss", "cost")
 
