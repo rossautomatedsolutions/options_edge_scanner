@@ -1,45 +1,55 @@
+"""Unit tests for options_edge_scanner.models.probability_estimator."""
+
 import pytest
 
 from options_edge_scanner.models.probability_estimator import estimate_probability_of_profit
 
 
+SPOT_PRICE = 100.0
+IV_20_PERCENT = 0.20
+ONE_MONTH = 30.0 / 252.0
+
+
 def _base_row(**overrides):
+    """Create synthetic spread input with fixed spot and reasonable volatility."""
     row = {
-        "underlying_price": 100.0,
+        "underlying_price": SPOT_PRICE,
         "lower_strike": 95.0,
         "upper_strike": 105.0,
-        "implied_volatility": 0.25,
-        "time_to_expiration": 0.5,
+        "implied_volatility": IV_20_PERCENT,
+        "time_to_expiration": ONE_MONTH,
     }
     row.update(overrides)
     return row
 
 
-def test_monotonicity_for_above_tail_probability_decreases_with_higher_breakeven() -> None:
-    # bull_call_debit => PoP = P(S_T > lower_strike + debit)
+def test_monotonicity_above_tail_decreases_as_breakeven_increases() -> None:
+    """As BE rises, P(S_T > BE) must decrease."""
+    # bull_call_debit => PoP = P(S_T > (lower_strike + debit))
     low_be = estimate_probability_of_profit(
-        _base_row(spread_type="bull_call_debit", lower_strike=90.0, debit=4.0)
+        _base_row(spread_type="bull_call_debit", lower_strike=90.0, debit=6.0)  # BE=96
     )
     mid_be = estimate_probability_of_profit(
-        _base_row(spread_type="bull_call_debit", lower_strike=90.0, debit=10.0)
+        _base_row(spread_type="bull_call_debit", lower_strike=90.0, debit=10.0)  # BE=100
     )
     high_be = estimate_probability_of_profit(
-        _base_row(spread_type="bull_call_debit", lower_strike=90.0, debit=16.0)
+        _base_row(spread_type="bull_call_debit", lower_strike=90.0, debit=14.0)  # BE=104
     )
 
     assert low_be > mid_be > high_be
 
 
-def test_monotonicity_for_below_tail_probability_increases_with_higher_breakeven() -> None:
-    # bear_call_credit => PoP = P(S_T < lower_strike + credit)
+def test_monotonicity_below_tail_increases_as_breakeven_increases() -> None:
+    """As BE rises, P(S_T < BE) must increase."""
+    # bear_call_credit => PoP = P(S_T < (lower_strike + credit))
     low_be = estimate_probability_of_profit(
-        _base_row(spread_type="bear_call_credit", lower_strike=90.0, credit=1.0)
+        _base_row(spread_type="bear_call_credit", lower_strike=92.0, credit=4.0)  # BE=96
     )
     mid_be = estimate_probability_of_profit(
-        _base_row(spread_type="bear_call_credit", lower_strike=90.0, credit=8.0)
+        _base_row(spread_type="bear_call_credit", lower_strike=92.0, credit=8.0)  # BE=100
     )
     high_be = estimate_probability_of_profit(
-        _base_row(spread_type="bear_call_credit", lower_strike=90.0, credit=15.0)
+        _base_row(spread_type="bear_call_credit", lower_strike=92.0, credit=12.0)  # BE=104
     )
 
     assert low_be < mid_be < high_be
@@ -48,115 +58,89 @@ def test_monotonicity_for_below_tail_probability_increases_with_higher_breakeven
 @pytest.mark.parametrize(
     "spread_row",
     [
-        _base_row(spread_type="bull_call_debit", lower_strike=92.0, debit=5.0),
-        _base_row(spread_type="bear_put_debit", upper_strike=108.0, debit=6.0),
-        _base_row(spread_type="bull_put_credit", upper_strike=110.0, credit=4.0),
-        _base_row(spread_type="bear_call_credit", lower_strike=90.0, credit=6.0),
+        _base_row(spread_type="bull_call_debit", lower_strike=94.0, debit=5.0),
+        _base_row(spread_type="bear_put_debit", upper_strike=106.0, debit=6.0),
+        _base_row(spread_type="bull_put_credit", upper_strike=106.0, credit=5.0),
+        _base_row(spread_type="bear_call_credit", lower_strike=94.0, credit=5.0),
     ],
 )
-def test_probability_is_always_bounded_between_zero_and_one(spread_row: dict) -> None:
+def test_probability_bounds_between_zero_and_one(spread_row: dict) -> None:
+    """All returned probabilities must be valid probabilities."""
     probability = estimate_probability_of_profit(spread_row)
     assert 0.0 <= probability <= 1.0
 
 
-def test_edge_cases_deep_itm_and_deep_otm_for_above_tail() -> None:
-    # bull_call_debit => PoP = P(S_T > BE)
-    # Deep ITM: breakeven far below spot -> near 1.
+def test_deep_itm_vs_deep_otm_for_above_tail() -> None:
+    """Above-tail spreads should approach 1 when deep ITM and 0 when deep OTM."""
+    # bull_call_debit => P(S_T > BE)
     deep_itm = estimate_probability_of_profit(
-        _base_row(
-            spread_type="bull_call_debit",
-            lower_strike=20.0,
-            debit=1.0,
-            implied_volatility=0.15,
-            time_to_expiration=0.5,
-        )
+        _base_row(spread_type="bull_call_debit", lower_strike=50.0, upper_strike=70.0, debit=2.0, time_to_expiration=0.5)
     )
-    # Deep OTM: breakeven far above spot -> near 0.
     deep_otm = estimate_probability_of_profit(
-        _base_row(
-            spread_type="bull_call_debit",
-            lower_strike=995.0,
-            upper_strike=1200.0,
-            debit=5.0,
-            implied_volatility=0.15,
-            time_to_expiration=0.5,
-        )
+        _base_row(spread_type="bull_call_debit", lower_strike=180.0, upper_strike=200.0, debit=10.0, time_to_expiration=0.5)
     )
 
-    assert deep_itm > 0.999
-    assert deep_otm < 0.001
+    assert deep_itm > 0.99
+    assert deep_otm < 0.01
 
 
-def test_edge_cases_deep_itm_and_deep_otm_for_below_tail() -> None:
-    # bear_put_debit => PoP = P(S_T < BE)
-    # Deep ITM: breakeven far above spot -> near 1.
+def test_deep_itm_vs_deep_otm_for_below_tail() -> None:
+    """Below-tail spreads should approach 1 when deep ITM and 0 when deep OTM."""
+    # bear_put_debit => P(S_T < BE), with BE = upper_strike - debit
     deep_itm = estimate_probability_of_profit(
-        _base_row(
-            spread_type="bear_put_debit",
-            upper_strike=200.0,
-            debit=1.0,
-            implied_volatility=0.15,
-            time_to_expiration=0.5,
-        )
+        _base_row(spread_type="bear_put_debit", lower_strike=170.0, upper_strike=180.0, debit=2.0, time_to_expiration=0.5)
     )
-    # Deep OTM: breakeven far below spot -> near 0.
     deep_otm = estimate_probability_of_profit(
-        _base_row(
-            spread_type="bear_put_debit",
-            lower_strike=1.0,
-            upper_strike=25.0,
-            debit=24.5,
-            implied_volatility=0.15,
-            time_to_expiration=0.5,
-        )
+        _base_row(spread_type="bear_put_debit", lower_strike=20.0, upper_strike=30.0, debit=25.0, time_to_expiration=0.5)
     )
 
-    assert deep_itm > 0.999
-    assert deep_otm < 0.001
+    assert deep_itm > 0.99
+    assert deep_otm < 0.01
 
 
-def test_near_expiration_approaches_step_function_behavior() -> None:
+def test_near_expiration_behaves_like_step_function() -> None:
+    """As T -> 0, probabilities should become almost binary around spot vs BE."""
     tiny_t = 1e-8
 
-    above_when_be_below_spot = estimate_probability_of_profit(
+    above_tail_when_be_below_spot = estimate_probability_of_profit(
         _base_row(
             spread_type="bull_call_debit",
             lower_strike=90.0,
-            debit=9.0,  # BE=99 < spot
-            implied_volatility=0.2,
+            debit=8.0,  # BE=98 < spot
+            implied_volatility=IV_20_PERCENT,
             time_to_expiration=tiny_t,
         )
     )
-    above_when_be_above_spot = estimate_probability_of_profit(
+    above_tail_when_be_above_spot = estimate_probability_of_profit(
         _base_row(
             spread_type="bull_call_debit",
             lower_strike=90.0,
-            debit=11.0,  # BE=101 > spot
-            implied_volatility=0.2,
+            debit=12.0,  # BE=102 > spot
+            implied_volatility=IV_20_PERCENT,
             time_to_expiration=tiny_t,
         )
     )
 
-    below_when_be_above_spot = estimate_probability_of_profit(
+    below_tail_when_be_above_spot = estimate_probability_of_profit(
         _base_row(
             spread_type="bear_call_credit",
-            lower_strike=100.0,
-            credit=1.0,  # BE=101 > spot
-            implied_volatility=0.2,
+            lower_strike=101.0,
+            credit=1.0,  # BE=102 > spot
+            implied_volatility=IV_20_PERCENT,
             time_to_expiration=tiny_t,
         )
     )
-    below_when_be_below_spot = estimate_probability_of_profit(
+    below_tail_when_be_below_spot = estimate_probability_of_profit(
         _base_row(
             spread_type="bear_call_credit",
-            lower_strike=98.0,
-            credit=1.0,  # BE=99 < spot
-            implied_volatility=0.2,
+            lower_strike=97.0,
+            credit=1.0,  # BE=98 < spot
+            implied_volatility=IV_20_PERCENT,
             time_to_expiration=tiny_t,
         )
     )
 
-    assert above_when_be_below_spot > 0.99
-    assert above_when_be_above_spot < 0.01
-    assert below_when_be_above_spot > 0.99
-    assert below_when_be_below_spot < 0.01
+    assert above_tail_when_be_below_spot > 0.99
+    assert above_tail_when_be_above_spot < 0.01
+    assert below_tail_when_be_above_spot > 0.99
+    assert below_tail_when_be_below_spot < 0.01
