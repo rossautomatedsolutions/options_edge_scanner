@@ -60,34 +60,42 @@ def estimate_probability_of_profit(spread_row: Mapping[str, Any]) -> float:
     sigma_t = implied_vol * math.sqrt(time_to_expiration)
     sigma_t = max(sigma_t, _EPSILON)
 
-    if spread_type in {"bull_call_debit", "call_vertical"}:
+    # Vertical spread PoP is a one-sided breakeven event:
+    # - bullish structures profit when ST finishes above breakeven
+    # - bearish structures profit when ST finishes below breakeven
+    #
+    # We keep a strict, explicit spread_type branch here so payoff direction
+    # remains unambiguous.
+    if spread_type == "bull_call_debit":
         debit = _read_float(spread_row, "debit", "cost", "max_loss", "loss")
         breakeven = low + debit
         tail_direction = "above"
-    elif spread_type in {"bear_put_debit", "put_vertical"}:
+    elif spread_type == "bear_put_debit":
         debit = _read_float(spread_row, "debit", "cost", "max_loss", "loss")
         breakeven = high - debit
         tail_direction = "below"
-    elif spread_type in {"bull_put_credit", "put_credit"}:
+    elif spread_type == "bull_put_credit":
         credit = _read_float(spread_row, "credit", "max_profit", "payoff")
         breakeven = high - credit
         tail_direction = "above"
-    elif spread_type in {"bear_call_credit", "call_credit"}:
+    elif spread_type == "bear_call_credit":
         credit = _read_float(spread_row, "credit", "max_profit", "payoff")
         breakeven = low + credit
         tail_direction = "below"
     else:
         raise ValueError(
             "Unsupported spread_type for probability_of_profit; "
-            "expected one of: bull_put_credit, bear_call_credit, bull_call_debit, "
-            "bear_put_debit, call_vertical, put_vertical, call_credit, put_credit"
+            "expected one of: bull_put_credit, bear_call_credit, "
+            "bull_call_debit, bear_put_debit"
         )
 
     if breakeven <= 0:
         raise ValueError("breakeven must be positive")
 
-    # Lognormal terminal distribution:
+    # Lognormal terminal distribution at expiration:
     # ln(ST / S0) ~ N(-0.5 * sigma^2 * T, sigma^2 * T)
+    # Transform breakeven into this log-space, then evaluate the standard
+    # normal CDF to recover P(ST <= BE) and convert to the required tail.
     drift = -0.5 * (implied_vol ** 2) * time_to_expiration
     z_be = (math.log(breakeven / spot) - drift) / sigma_t
     cdf_at_be = _normal_cdf(z_be)
