@@ -15,6 +15,7 @@ Then transaction cost is applied consistently as:
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 TRANSACTION_COST = 0.05
@@ -32,7 +33,9 @@ def _get_numeric_field(spread_row: Mapping[str, Any], *field_names: str) -> floa
     """Extract the first present numeric field from a spread row mapping."""
     for field_name in field_names:
         if field_name in spread_row and spread_row[field_name] is not None:
-            return float(spread_row[field_name])
+            value = float(spread_row[field_name])
+            if math.isfinite(value):
+                return value
 
     expected = ", ".join(field_names)
     raise KeyError(f"Missing required field. Expected one of: {expected}")
@@ -57,6 +60,9 @@ def _normalize_win_loss_probabilities(probability_weights: Mapping[str, Any]) ->
             probability_weights.get("probability_of_loss", probability_weights.get("p_loss", 0.0)),
         )
     )
+
+    if not math.isfinite(win) or not math.isfinite(loss):
+        raise ValueError("win and loss probabilities must be finite")
 
     if win < -_EPSILON or win > 1.0 + _EPSILON:
         raise ValueError("win probability must be in [0, 1]")

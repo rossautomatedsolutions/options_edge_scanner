@@ -69,6 +69,20 @@ class SpreadEVCalculatorTests(unittest.TestCase):
                 probability_weights={"win": 0.8, "loss": 0.3},
             )
 
+    def test_raises_on_non_finite_probability_weights(self) -> None:
+        spread = {
+            "spread_type": "bear_put_debit",
+            "strike_lower": 100,
+            "strike_upper": 110,
+            "cost": 3,
+            "max_profit": 7,
+        }
+        with self.assertRaises(ValueError):
+            calculate_expected_value(
+                spread,
+                probability_weights={"win": float("nan"), "loss": 1.0},
+            )
+
     def test_raises_on_unrecognized_spread_type(self) -> None:
         spread = {
             "spread_type": "call_vertical",
@@ -89,6 +103,23 @@ class SpreadEVCalculatorTests(unittest.TestCase):
         expected = (0.4 * 1.5) - (0.6 * 3.0) - TRANSACTION_COST
         self.assertTrue(math.isclose(result["expected_value"], expected))
         self.assertEqual(result["ev_method"], "binary")
+
+    def test_credit_nan_alias_falls_back_to_max_profit(self) -> None:
+        spread = {
+            "spread_type": "bear_call_credit",
+            "short_strike": 110,
+            "long_strike": 100,
+            "credit": float("nan"),
+            "max_profit": 2,
+            "max_loss": 8,
+        }
+        probabilities = {"win": 0.7, "loss": 0.3}
+
+        result = calculate_expected_value(spread, probability_weights=probabilities)
+
+        expected_gross = (0.7 * 2) + (0.3 * -8)
+        expected = expected_gross - TRANSACTION_COST
+        self.assertAlmostEqual(result["expected_value"], expected, places=10)
 
     def test_raises_on_invalid_binary_probability(self) -> None:
         spread = {"payoff": 2.0, "loss": 1.0}
