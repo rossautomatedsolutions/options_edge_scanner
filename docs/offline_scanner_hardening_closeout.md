@@ -1,44 +1,56 @@
 # Offline Scanner Hardening Closeout
 
-## Current Synced Commit Evidence
+## Synced Commit Evidence
 
-- Canonical local clone: `C:\GitHub\options_edge_scanner`
+- Canonical local repo reviewed: `C:\GitHub\options_edge_scanner`
 - Remote: `https://github.com/rossautomatedsolutions/options_edge_scanner.git`
-- Current synced tip reviewed for this closeout: `ab7b624 Add offline scanner output schema regression test`
-- Current hardening-related commits visible on `main`:
-  - `ab7b624 Add offline scanner output schema regression test`
-  - `31bfd04 Add offline scanner CLI help tests`
-  - `0012c16 Document offline scanner readiness boundary`
-  - `2bfd75b Ignore generated offline scanner outputs and clarify offline CLI docs`
-  - `8d7b5c9 Add offline scanner pipeline CLI fixtures`
+- Reviewed synced tip on `main`: `ab7b624 Add offline scanner output schema regression test`
+- `git status -sb` at review start: `## main...origin/main`
 
-This closeout is repo-local and reflects the committed offline scanner validation surface currently aligned on `main`.
+This closeout note reflects the committed offline scanner surface currently aligned on `main` at `ab7b624`.
 
 ## Completed Hardening Coverage
 
-The offline scanner hardening pass now covers:
+- CLI help behavior
+  - `tests/test_offline_scan_cli.py` covers `--help` output for the single-run CLI.
+  - `tests/test_offline_batch_scan_cli.py` covers `--help` output for the batch CLI.
+  - Both entrypoints clearly describe the offline, research-only deterministic boundary and required arguments.
 
-- CLI help behavior for both `offline_scan` and `offline_batch_scan`
-- required CSV columns and loader validation for `OptionQuoteRow`
-- manifest missing-file behavior through batch CLI failure coverage
-- output schema coverage for written offline scan CSV artifacts
-- deterministic output and ranking order checks for the offline scan path
-- fixture-driven integration coverage using a small local option-chain CSV and manifest
-- generated output exclusion through repo documentation and Git ignore rules for `outputs/` and cache artifacts
+- Required CSV columns / loader validation
+  - `options_edge_scanner/data/loader.py` enforces the canonical `OptionQuoteRow` input contract.
+  - `tests/test_offline_data_loader.py` covers successful fixture loading and fail-fast missing-column behavior.
+  - Safe aliases are implemented in the loader for low-risk column normalization before validation.
+
+- Manifest missing-file behavior
+  - `options_edge_scanner/cli/offline_batch_scan.py` validates required manifest columns, non-empty row fields, valid `as_of`, and missing local input files.
+  - `tests/test_offline_batch_scan_cli.py` covers missing manifest column failure and row-level missing-file handling with `--continue-on-error`.
+
+- Output schema
+  - `tests/test_offline_scan_cli.py` and `tests/test_offline_batch_scan_cli.py` assert that emitted scanner CSVs match `SCANNER_OUTPUT_COLUMNS`.
+  - The current synced tip `ab7b624` adds explicit offline scanner output schema regression protection.
+
+- Deterministic output / ranking order
+  - `tests/test_offline_scan_cli.py` asserts monotonic descending `expected_value` order in emitted output.
+  - `tests/test_scanner_pipeline_integration.py` asserts deterministic top-row and mid-table values from fixed fixture input.
+
+- Fixture-driven integration coverage
+  - `tests/fixtures/sample_option_chain.csv` provides the canonical offline option-chain fixture.
+  - `tests/fixtures/offline_scan_manifest.csv` provides the canonical batch-manifest fixture.
+  - `tests/test_scanner_pipeline_integration.py` exercises the deterministic pipeline from fixture input through ranked opportunities.
+
+- Generated output exclusion
+  - Generated offline scanner CSV artifacts are treated as local outputs, not tracked source data.
+  - Existing repo docs and workflow expect outputs such as `outputs/*.csv` to remain generated artifacts outside committed fixture coverage.
 
 ## Remaining Limitations
 
-- The single-run CLI still defaults `as_of` to the current UTC-normalized date when omitted, so deterministic historical runs should continue to supply `--as-of`.
-- Input-format coverage is intentionally narrow and centered on local fixture-style quote files rather than a larger set of vendor exports.
-- Manifest row paths are interpreted as provided and are not normalized relative to the manifest file location.
-- The spread generator currently covers debit verticals only and keeps the current width filter.
-- The scanner remains a research-only local workflow and not a production execution system.
+- Deterministic historical runs still depend on passing an explicit `--as-of` date; otherwise the single-run CLI may use a current-date default through the scanner path.
+- Loader alias handling is implemented, but current tests emphasize canonical fixture columns more than alias-specific fixture coverage.
+- Batch manifest paths are interpreted as local filesystem paths exactly as provided and are not currently normalized relative to the manifest location.
+- The offline scanner surface remains centered on a small deterministic fixture set rather than a broader catalog of vendor file formats.
+- The current spread workflow is still a research scanner path, not a production runtime with richer logging, packaging, or operational reporting.
 
-## Safety Boundary And Non-Goals
-
-This offline scanner hardening track remains explicitly bounded to research-only local analysis.
-
-Non-goals:
+## Explicit Non-Goals
 
 - no broker integration
 - no live trading
@@ -46,16 +58,12 @@ Non-goals:
 - no recommendation language
 - no live market data fetching
 
-The current scanner output remains a deterministic research artifact rather than an instruction, route, signal-distribution system, or brokerage workflow.
-
 ## Recommendation
 
-Recommendation: pause this offline scanner hardening track for now.
+Recommendation: pause this hardening track after `ab7b624` unless a narrowly scoped contract gap is discovered.
 
 Reasoning:
 
-- the current fixture-driven scanner path has coherent validation coverage for the intended offline local-file workflow
-- the remaining gaps are lower-priority contract-expansion ideas rather than obvious correctness holes
-- further work is more likely to be new-scope expansion than incremental hardening
-
-If this track resumes later, the safest follow-up would be targeted alias-coverage tests or a small note/test around manifest path interpretation, rather than broader scanner functionality.
+- The current offline surface already has meaningful regression coverage for loader validation, CLI help, manifest failure behavior, deterministic ranking order, integration fixtures, and output schema.
+- The remaining work is incremental polish rather than an obvious stability blocker.
+- If future work resumes, the safest next step is additional alias/manifest-path contract testing rather than expanding into live-data or brokerage-adjacent functionality.
