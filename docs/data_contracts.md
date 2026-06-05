@@ -93,9 +93,9 @@ Boundary:
 
 ## Offline Adapter
 
-The first offline adapter lives in [options_edge_scanner/data/loader.py](/C:/GitHub_Review_Folder/options_edge_scanner/options_edge_scanner/data/loader.py).
-The config-driven offline scan entrypoint lives in [options_edge_scanner/cli/offline_scan.py](/C:/GitHub_Review_Folder/options_edge_scanner/options_edge_scanner/cli/offline_scan.py).
-The batch manifest entrypoint lives in [options_edge_scanner/cli/offline_batch_scan.py](/C:/GitHub_Review_Folder/options_edge_scanner/options_edge_scanner/cli/offline_batch_scan.py).
+The first offline adapter lives in [loader.py](/C:/GitHub/options_edge_scanner/options_edge_scanner/data/loader.py).
+The config-driven offline scan entrypoint lives in [offline_scan.py](/C:/GitHub/options_edge_scanner/options_edge_scanner/cli/offline_scan.py).
+The batch manifest entrypoint lives in [offline_batch_scan.py](/C:/GitHub/options_edge_scanner/options_edge_scanner/cli/offline_batch_scan.py).
 
 Current behavior:
 
@@ -107,3 +107,10 @@ Current behavior:
 - can write ranked `ScannerOpportunityRow` output to a local CSV artifact without fetching live data
 - can batch multiple offline scans from a manifest with `input_path`, `output_path`, and explicit `as_of`
 - can optionally emit a batch summary CSV with `input_path`, `output_path`, `as_of`, `status`, `row_count`, and `error_message`
+
+Operational notes:
+
+- These CLI entrypoints are offline and fixture-driven only.
+- They do not place orders, connect to a broker, fetch live market data, or emit trading recommendations.
+- Expected input files are local option-quote `.csv` files, or `.parquet` when pandas parquet support is already installed.
+- Output files are generated CSV artifacts written to the caller-provided `--output` path or manifest `output_path`. The repo-level `outputs/` directory is intended for generated local artifacts and should remain untracked.
