@@ -128,3 +128,17 @@ def test_offline_batch_scan_cli_continues_and_records_failed_rows(tmp_path: Path
     assert summary_frame.iloc[1]["status"] == "failed"
     assert summary_frame.iloc[1]["row_count"] == 0
     assert "does not exist" in str(summary_frame.iloc[1]["error_message"])
+
+
+def test_offline_batch_scan_cli_help_includes_expected_arguments(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        main(["--help"])
+
+    captured = capsys.readouterr()
+
+    assert "research-only deterministic scanner" in captured.out
+    assert "--manifest" in captured.out
+    assert "--summary-output" in captured.out
+    assert "--continue-on-error" in captured.out
