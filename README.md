@@ -15,6 +15,8 @@ It does not implement:
 - recommendations
 - autonomous signal execution
 
+For a repo-local status summary of the current offline scanner surface, see [docs/offline_scanner_readiness_review.md](/C:/GitHub/options_edge_scanner/docs/offline_scanner_readiness_review.md).
+
 ## What Is Implemented
 
 - normalized option-chain loading in [options_edge_scanner/data/option_chain_loader.py](/C:/GitHub_Review_Folder/options_edge_scanner/options_edge_scanner/data/option_chain_loader.py)
