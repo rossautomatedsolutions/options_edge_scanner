@@ -33,6 +33,10 @@ def test_offline_scan_cli_writes_ranked_output(tmp_path: Path) -> None:
 
     assert list(output_frame.columns) == SCANNER_OUTPUT_COLUMNS
     assert len(output_frame) == 9
+    assert output_frame["expected_value"].is_monotonic_decreasing
+    assert output_frame.iloc[0]["spread_type"] == "bear_put_debit"
+    assert output_frame.iloc[0]["lower_strike"] == 100.0
+    assert output_frame.iloc[0]["upper_strike"] == 110.0
 
 
 def test_offline_scan_cli_help_includes_expected_arguments(capsys: pytest.CaptureFixture[str]) -> None:
