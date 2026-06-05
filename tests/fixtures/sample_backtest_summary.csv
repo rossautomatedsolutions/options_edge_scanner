@@ -1,0 +1,2 @@
+run_id,signal_count,trade_count,win_count,loss_count,total_expected_value,total_realized_pnl,notes
+backtest_run_001,2,2,1,1,9.684692526854685,4.5,Research-only placeholder summary with expiration-based fixture exits

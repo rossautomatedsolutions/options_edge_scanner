@@ -1,0 +1,3 @@
+signal_id,as_of,ticker,expiration,spread_type,lower_strike,upper_strike,debit,max_profit,max_loss,expected_value,probability_of_profit
+sig_001,2026-01-02,XYZ,2026-02-13,bear_put_debit,100.0,110.0,2.0,8.0,2.0,6.558285656154397,0.8608285656154397
+sig_002,2026-01-02,XYZ,2026-02-13,bull_call_debit,95.0,105.0,3.0,7.0,3.0,3.126406870700288,0.6176406870700288

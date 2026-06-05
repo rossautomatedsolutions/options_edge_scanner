@@ -1,0 +1,3 @@
+signal_id,ticker,entry_date,exit_date,exit_reason,fill_price_assumption,realized_pnl,max_profit,max_loss,outcome_label
+sig_001,XYZ,2026-01-02,2026-02-13,expiration,2.0,5.5,8.0,2.0,win
+sig_002,XYZ,2026-01-02,2026-02-13,expiration,3.0,-1.0,7.0,3.0,loss
