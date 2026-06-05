@@ -1,4 +1,4 @@
-"""Utilities for generating vertical option spreads from option-chain data."""
+"""Utilities for generating canonical vertical spread rows from option quotes."""
 
 from __future__ import annotations
 
@@ -10,12 +10,19 @@ import pandas as pd
 _OUTPUT_COLUMNS = [
     "ticker",
     "expiration",
+    "option_type",
     "spread_type",
-    "strike_lower",
-    "strike_upper",
+    "lower_strike",
+    "upper_strike",
+    "long_strike",
+    "short_strike",
+    "width",
+    "debit",
     "cost",
     "max_profit",
-    "width",
+    "max_loss",
+    "implied_volatility",
+    "underlying_price",
 ]
 
 
@@ -45,6 +52,32 @@ def _resolve_price_column(df: pd.DataFrame) -> str | None:
     )
 
 
+def _resolve_underlying_column(df: pd.DataFrame) -> str | None:
+    """Choose the best available underlying spot column."""
+    return _find_column(
+        df.columns,
+        [
+            "underlying_price",
+            "spot_price",
+            "spot",
+            "stock_price",
+            "underlying",
+        ],
+    )
+
+
+def _resolve_iv_column(df: pd.DataFrame) -> str | None:
+    """Choose the best available implied-volatility column."""
+    return _find_column(
+        df.columns,
+        [
+            "implied_volatility",
+            "implied_vol",
+            "iv",
+        ],
+    )
+
+
 def _normalize_option_type(series: pd.Series) -> pd.Series:
     """Map option type labels to lowercase call/put tokens."""
     normalized = series.astype(str).str.strip().str.lower()
@@ -52,10 +85,11 @@ def _normalize_option_type(series: pd.Series) -> pd.Series:
 
 
 def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
-    """Generate valid same-expiration vertical spreads from option-chain rows.
+    """Generate valid same-expiration debit vertical spreads from option quotes.
 
-    Produces call debit spreads (long lower strike / short upper strike)
-    and put debit spreads (long upper strike / short lower strike).
+    Produces canonical spread rows for:
+    - ``bull_call_debit``: long lower-strike call / short upper-strike call
+    - ``bear_put_debit``: long upper-strike put / short lower-strike put
     """
     if option_df.empty:
         return pd.DataFrame(columns=_OUTPUT_COLUMNS)
@@ -77,6 +111,8 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
     ticker_col = _find_column(option_df.columns, ["ticker", "underlying", "underlying_symbol"])
 
     price_col = _resolve_price_column(option_df)
+    underlying_col = _resolve_underlying_column(option_df)
+    iv_col = _resolve_iv_column(option_df)
     if price_col is None:
         # Fall back to midpoint if bid/ask are available.
         bid_col = _find_column(option_df.columns, ["bid"])
@@ -91,6 +127,10 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
 
     working[strike_col] = pd.to_numeric(working[strike_col], errors="coerce")
     working[price_col] = pd.to_numeric(working[price_col], errors="coerce")
+    if underlying_col is not None:
+        working[underlying_col] = pd.to_numeric(working[underlying_col], errors="coerce")
+    if iv_col is not None:
+        working[iv_col] = pd.to_numeric(working[iv_col], errors="coerce")
     working[option_type_col] = _normalize_option_type(working[option_type_col])
 
     working = working.dropna(subset=[strike_col, expiry_col, option_type_col, price_col])
@@ -130,20 +170,32 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
 
                     price_lower = float(prices[i])
                     price_upper = float(prices[j])
+                    iv_values = side_group.iloc[[i, j]][iv_col] if iv_col is not None else pd.Series(dtype=float)
+                    underlying_values = (
+                        side_group.iloc[[i, j]][underlying_col]
+                        if underlying_col is not None
+                        else pd.Series(dtype=float)
+                    )
+                    implied_volatility = float(pd.to_numeric(iv_values, errors="coerce").mean())
+                    underlying_price = float(pd.to_numeric(underlying_values, errors="coerce").mean())
 
                     if side == "call":
-                        cost = price_lower - price_upper
-                        spread_type = "call_vertical"
+                        debit = price_lower - price_upper
+                        spread_type = "bull_call_debit"
+                        long_strike = strike_lower
+                        short_strike = strike_upper
                     else:
                         # Put debit spread: long higher strike put, short lower strike put.
-                        cost = price_upper - price_lower
-                        spread_type = "put_vertical"
+                        debit = price_upper - price_lower
+                        spread_type = "bear_put_debit"
+                        long_strike = strike_upper
+                        short_strike = strike_lower
 
-                    if cost <= 0 or cost >= width:
+                    if debit <= 0 or debit >= width:
                         # Invalid/zero-profit or negative-credit structure.
                         continue
 
-                    max_profit = width - cost
+                    max_profit = width - debit
                     if max_profit <= 0:
                         continue
 
@@ -151,12 +203,19 @@ def generate_vertical_spreads(option_df: pd.DataFrame) -> pd.DataFrame:
                         {
                             "ticker": ticker_value,
                             "expiration": expiry_value,
+                            "option_type": side,
                             "spread_type": spread_type,
-                            "strike_lower": strike_lower,
-                            "strike_upper": strike_upper,
-                            "cost": float(cost),
+                            "lower_strike": strike_lower,
+                            "upper_strike": strike_upper,
+                            "long_strike": float(long_strike),
+                            "short_strike": float(short_strike),
+                            "debit": float(debit),
+                            "cost": float(debit),
                             "max_profit": float(max_profit),
+                            "max_loss": float(debit),
                             "width": float(width),
+                            "implied_volatility": implied_volatility,
+                            "underlying_price": underlying_price,
                         }
                     )
 

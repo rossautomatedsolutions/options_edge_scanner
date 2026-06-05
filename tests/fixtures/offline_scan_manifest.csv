@@ -1,0 +1,2 @@
+input_path,output_path,as_of
+tests/fixtures/sample_option_chain.csv,outputs/offline_batch_scan_sample.csv,2026-01-02
