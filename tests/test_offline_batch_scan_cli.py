@@ -10,6 +10,7 @@ from options_edge_scanner.scanner.engine import SCANNER_OUTPUT_COLUMNS
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_option_chain.csv"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_offline_batch_scan_cli_writes_ranked_output(tmp_path: Path) -> None:
@@ -128,6 +129,54 @@ def test_offline_batch_scan_cli_continues_and_records_failed_rows(tmp_path: Path
     assert summary_frame.iloc[1]["status"] == "failed"
     assert summary_frame.iloc[1]["row_count"] == 0
     assert "does not exist" in str(summary_frame.iloc[1]["error_message"])
+
+
+def test_offline_batch_scan_cli_accepts_manifest_paths_exactly_as_provided_when_cwd_resolves_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_path = tmp_path / "offline_batch_scan_sample.csv"
+    manifest_path = tmp_path / "offline_scan_manifest.csv"
+    monkeypatch.chdir(REPO_ROOT)
+    pd.DataFrame(
+        [
+            {
+                "input_path": "tests/fixtures/sample_option_chain.csv",
+                "output_path": str(output_path),
+                "as_of": "2026-01-02",
+            }
+        ]
+    ).to_csv(manifest_path, index=False)
+
+    exit_code = main(["--manifest", str(manifest_path)])
+
+    assert exit_code == 0
+    assert output_path.exists()
+
+    output_frame = pd.read_csv(output_path)
+    assert list(output_frame.columns) == SCANNER_OUTPUT_COLUMNS
+    assert len(output_frame) == 9
+
+
+def test_offline_batch_scan_cli_does_not_resolve_input_paths_relative_to_manifest_location(
+    tmp_path: Path,
+) -> None:
+    manifest_dir = tmp_path / "manifest_dir"
+    manifest_dir.mkdir()
+    copied_fixture = manifest_dir / "sample_option_chain.csv"
+    copied_fixture.write_text(FIXTURE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    manifest_path = manifest_dir / "offline_scan_manifest.csv"
+    pd.DataFrame(
+        [
+            {
+                "input_path": "sample_option_chain.csv",
+                "output_path": str(tmp_path / "unused.csv"),
+                "as_of": "2026-01-02",
+            }
+        ]
+    ).to_csv(manifest_path, index=False)
+
+    with pytest.raises(FileNotFoundError, match="Manifest row 1 input file does not exist: sample_option_chain.csv"):
+        main(["--manifest", str(manifest_path)])
 
 
 def test_offline_batch_scan_cli_help_includes_expected_arguments(

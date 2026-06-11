@@ -10,6 +10,7 @@ from options_edge_scanner.scanner.engine import build_scanner_opportunities
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_option_chain.csv"
+ALIAS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_option_chain_aliases.csv"
 
 
 def test_load_option_quotes_reads_existing_csv_fixture() -> None:
@@ -28,6 +29,28 @@ def test_load_option_quotes_reads_existing_csv_fixture() -> None:
     ]
     assert len(option_quotes) == 8
     assert option_quotes["ticker"].tolist()[:2] == ["XYZ", "XYZ"]
+    assert pd.api.types.is_datetime64_any_dtype(option_quotes["expiration"])
+
+
+def test_load_option_quotes_normalizes_documented_safe_alias_columns() -> None:
+    option_quotes = load_option_quotes(ALIAS_FIXTURE_PATH)
+
+    assert list(option_quotes.columns) == [
+        "ticker",
+        "expiration",
+        "strike",
+        "type",
+        "bid",
+        "ask",
+        "mid",
+        "implied_vol",
+        "underlying_price",
+    ]
+    assert len(option_quotes) == 8
+    assert option_quotes["ticker"].tolist()[:2] == ["XYZ", "XYZ"]
+    assert option_quotes["type"].tolist()[:2] == ["call", "call"]
+    assert option_quotes["strike"].tolist()[:3] == [95, 100, 105]
+    assert option_quotes["implied_vol"].tolist()[:2] == [0.24, 0.23]
     assert pd.api.types.is_datetime64_any_dtype(option_quotes["expiration"])
 
 
@@ -58,3 +81,14 @@ def test_loaded_fixture_feeds_scanner_pipeline() -> None:
     assert len(opportunities) == 9
     assert opportunities.iloc[0]["spread_type"] == "bear_put_debit"
     assert opportunities.iloc[0]["expected_value"] == pytest.approx(6.5582856562, abs=1e-9)
+
+
+def test_alias_fixture_feeds_scanner_pipeline() -> None:
+    option_quotes = load_option_quotes(ALIAS_FIXTURE_PATH)
+
+    opportunities = build_scanner_opportunities(option_quotes, as_of="2026-01-02")
+
+    assert len(opportunities) > 0
+    assert opportunities.iloc[0]["ticker"] == "XYZ"
+    assert {"bear_put_debit", "bull_call_debit"}.issuperset(set(opportunities["spread_type"].unique()))
+    assert opportunities["expected_value"].is_monotonic_decreasing
