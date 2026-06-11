@@ -18,12 +18,12 @@ This closeout note reflects the committed offline scanner surface currently alig
 
 - Required CSV columns / loader validation
   - `options_edge_scanner/data/loader.py` enforces the canonical `OptionQuoteRow` input contract.
-  - `tests/test_offline_data_loader.py` covers successful fixture loading and fail-fast missing-column behavior.
+  - `tests/test_offline_data_loader.py` covers successful canonical fixture loading, safe alias normalization through a synthetic local fixture, and fail-fast missing-column behavior.
   - Safe aliases are implemented in the loader for low-risk column normalization before validation.
 
 - Manifest missing-file behavior
   - `options_edge_scanner/cli/offline_batch_scan.py` validates required manifest columns, non-empty row fields, valid `as_of`, and missing local input files.
-  - `tests/test_offline_batch_scan_cli.py` covers missing manifest column failure and row-level missing-file handling with `--continue-on-error`.
+  - `tests/test_offline_batch_scan_cli.py` covers missing manifest column failure, row-level missing-file handling with `--continue-on-error`, and the current manifest-path contract.
 
 - Output schema
   - `tests/test_offline_scan_cli.py` and `tests/test_offline_batch_scan_cli.py` assert that emitted scanner CSVs match `SCANNER_OUTPUT_COLUMNS`.
@@ -35,6 +35,7 @@ This closeout note reflects the committed offline scanner surface currently alig
 
 - Fixture-driven integration coverage
   - `tests/fixtures/sample_option_chain.csv` provides the canonical offline option-chain fixture.
+  - `tests/fixtures/sample_option_chain_aliases.csv` provides a synthetic offline alias-coverage fixture.
   - `tests/fixtures/offline_scan_manifest.csv` provides the canonical batch-manifest fixture.
   - `tests/test_scanner_pipeline_integration.py` exercises the deterministic pipeline from fixture input through ranked opportunities.
 
@@ -45,7 +46,7 @@ This closeout note reflects the committed offline scanner surface currently alig
 ## Remaining Limitations
 
 - Deterministic historical runs still depend on passing an explicit `--as-of` date; otherwise the single-run CLI may use a current-date default through the scanner path.
-- Loader alias handling is implemented, but current tests emphasize canonical fixture columns more than alias-specific fixture coverage.
+- Loader alias handling is implemented, and the repo now has direct fixture-backed coverage for `option_type`, `expiry`, `strike_price`, and `iv`, but broader vendor-format coverage is still intentionally limited.
 - Batch manifest paths are interpreted as local filesystem paths exactly as provided and are not currently normalized relative to the manifest location.
 - The offline scanner surface remains centered on a small deterministic fixture set rather than a broader catalog of vendor file formats.
 - The current spread workflow is still a research scanner path, not a production runtime with richer logging, packaging, or operational reporting.

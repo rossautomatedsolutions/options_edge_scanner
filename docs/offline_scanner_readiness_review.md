@@ -78,18 +78,22 @@ Batch mode can also emit a summary CSV with:
 Current repo tests cover:
 
 - local file loading and contract validation
+- safe alias normalization through a synthetic local option-chain fixture
 - missing required input-column failure behavior
 - deterministic single-run CLI output writing
 - deterministic batch CLI output writing
 - optional batch summary generation
 - fail-fast manifest validation behavior
 - `--continue-on-error` summary behavior
+- manifest row paths working exactly as provided when the current working directory resolves them
+- manifest row paths not being implicitly resolved relative to the manifest file location
 - deterministic pipeline ordering and expected top-row values from fixture input
 
 Fixture coverage is small and stable:
 
 - `tests/fixtures/sample_option_chain.csv`
 - `tests/fixtures/offline_scan_manifest.csv`
+- `tests/fixtures/sample_option_chain_aliases.csv`
 
 ## Research/Offline Safety Boundary
 
@@ -120,8 +124,8 @@ The current output is a ranked research artifact, not a trade instruction or bro
 Safest next implementation/documentation steps:
 
 1. Add a small CLI behavior note or test that explicitly documents the non-deterministic default when `--as-of` is omitted.
-2. Add one or two fixture tests for safe input aliases such as `option_type`, `expiry`, and `iv` so the loader contract is protected by tests, not just implementation.
-3. Add a small manifest-path note or test clarifying that manifest row paths are interpreted as local paths exactly as provided.
+2. Add any further alias-specific fixture tests only if a real contract need appears beyond the currently covered `option_type`, `expiry`, `strike_price`, and `iv` set.
+3. Add any further manifest-path checks only if a new edge case appears beyond the current "exactly as provided" behavior.
 4. Keep future scanner expansion focused on offline contract coverage before introducing broader workflow plumbing.
 
 ## Explicit Non-Goals
