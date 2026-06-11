@@ -102,11 +102,30 @@ Current behavior:
 - reads local `.csv` files
 - reads local `.parquet` files when pandas parquet support is already available
 - validates required `OptionQuoteRow` columns before scanner use
-- applies only safe alias normalization already consistent with repo conventions, such as `option_type -> type`
+- applies only safe alias normalization already consistent with repo conventions
 - returns a dataframe compatible with `build_scanner_opportunities(...)`
 - can write ranked `ScannerOpportunityRow` output to a local CSV artifact without fetching live data
 - can batch multiple offline scans from a manifest with `input_path`, `output_path`, and explicit `as_of`
 - can optionally emit a batch summary CSV with `input_path`, `output_path`, `as_of`, `status`, `row_count`, and `error_message`
+
+Documented alias coverage currently exercised by repo tests includes:
+
+- `option_type -> type`
+- `expiry -> expiration`
+- `strike_price -> strike`
+- `iv -> implied_vol`
+
+The loader also supports additional low-risk aliases present in the implementation, including:
+
+- `expiry_date -> expiration`
+- `expiration_date -> expiration`
+- `implied_volatility -> implied_vol`
+
+Batch manifest path behavior currently exercised by repo tests:
+
+- manifest row paths are interpreted exactly as provided
+- manifest row paths work when the current working directory resolves them
+- manifest row paths are not implicitly resolved relative to the manifest file location
 
 Operational notes:
 
