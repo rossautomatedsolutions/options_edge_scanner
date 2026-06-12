@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List
+import importlib
+from typing import Any, List
 
 import pandas as pd
-import yfinance as yf
 
 
 OUTPUT_COLUMNS = [
@@ -57,7 +57,7 @@ def _normalize_side(
     return normalized[OUTPUT_COLUMNS]
 
 
-def _safe_underlying_price(ticker_obj: yf.Ticker) -> float:
+def _safe_underlying_price(ticker_obj: Any) -> float:
     """Get the latest underlying price if available."""
     history = ticker_obj.history(period="1d")
     if history.empty:
@@ -72,6 +72,7 @@ def _safe_underlying_price(ticker_obj: yf.Ticker) -> float:
 
 def load_option_chain(ticker: str) -> pd.DataFrame:
     """Load calls and puts for all expirations into a clean dataframe."""
+    yf = importlib.import_module("yfinance")
     ticker_obj = yf.Ticker(ticker)
     expirations = list(ticker_obj.options or [])
 
