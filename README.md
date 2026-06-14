@@ -17,6 +17,7 @@ It does not implement:
 
 For a repo-local status summary of the current offline scanner surface, see [docs/offline_scanner_readiness_review.md](/C:/GitHub/options_edge_scanner/docs/offline_scanner_readiness_review.md).
 For a concise demo/runbook for the committed offline scan workflow, see [docs/offline_scanner_demo.md](/C:/GitHub/options_edge_scanner/docs/offline_scanner_demo.md).
+For a notebook walkthrough of the same offline workflow, see [notebooks/01_offline_scanner_demo.ipynb](/C:/GitHub/options_edge_scanner/notebooks/01_offline_scanner_demo.ipynb).
 
 ## What Is Implemented
 
@@ -96,6 +97,7 @@ python -m options_edge_scanner.cli.offline_scan --input tests/fixtures/sample_op
 ```
 
 For an end-to-end PowerShell demo flow, including output preview and grouping commands, see [docs/offline_scanner_demo.md](/C:/GitHub/options_edge_scanner/docs/offline_scanner_demo.md).
+For a blog/demo-friendly notebook version of the workflow, see [notebooks/01_offline_scanner_demo.ipynb](/C:/GitHub/options_edge_scanner/notebooks/01_offline_scanner_demo.ipynb).
 
 ## Offline Batch Manifest
 
