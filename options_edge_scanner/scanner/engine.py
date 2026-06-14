@@ -10,6 +10,11 @@ from options_edge_scanner.config import ScannerConfig
 from options_edge_scanner.models.probability_estimator import estimate_probability_of_profit
 from options_edge_scanner.models.spread_ev_calculator import calculate_expected_value
 from options_edge_scanner.scanner.opportunity_ranker import rank_spreads
+from options_edge_scanner.scanner.quality_filters import (
+    OfflineScanQualitySettings,
+    apply_option_quote_quality_filters,
+    apply_spread_quality_filters,
+)
 from options_edge_scanner.scanner.spread_generator import generate_vertical_spreads
 
 
@@ -58,9 +63,13 @@ def build_scanner_opportunities(
     option_quotes: pd.DataFrame,
     *,
     as_of: Any | None = None,
+    quality_settings: OfflineScanQualitySettings | None = None,
 ) -> pd.DataFrame:
     """Build ranked scanner opportunities from normalized option quote rows."""
-    spreads = generate_vertical_spreads(option_quotes)
+    settings = quality_settings or OfflineScanQualitySettings()
+    filtered_quotes = apply_option_quote_quality_filters(option_quotes, settings=settings)
+    spreads = generate_vertical_spreads(filtered_quotes)
+    spreads = apply_spread_quality_filters(spreads, settings=settings)
     if spreads.empty:
         return _empty_scanner_frame()
 

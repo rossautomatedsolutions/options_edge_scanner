@@ -39,7 +39,7 @@ def test_offline_scanner_pipeline_is_deterministic() -> None:
     }
     assert required_columns.issubset(opportunities.columns)
 
-    assert len(opportunities) == 9
+    assert len(opportunities) == 7
 
     top_row = opportunities.iloc[0]
     assert top_row["ticker"] == "XYZ"
@@ -52,11 +52,11 @@ def test_offline_scanner_pipeline_is_deterministic() -> None:
     assert top_row["expected_value"] == pytest.approx(6.5582856562, abs=1e-9)
     assert top_row["edge_pct"] == pytest.approx(327.9142828, abs=1e-7)
 
-    fifth_row = opportunities.iloc[4]
-    assert fifth_row["spread_type"] == "bear_put_debit"
-    assert fifth_row["lower_strike"] == 100.0
-    assert fifth_row["upper_strike"] == 105.0
-    assert fifth_row["probability_of_profit"] == pytest.approx(0.7068696790, abs=1e-9)
-    assert fifth_row["expected_value"] == pytest.approx(2.1843483949, abs=1e-9)
+    fourth_row = opportunities.iloc[3]
+    assert fourth_row["spread_type"] == "bear_put_debit"
+    assert fourth_row["lower_strike"] == 100.0
+    assert fourth_row["upper_strike"] == 105.0
+    assert fourth_row["probability_of_profit"] == pytest.approx(0.7068696790, abs=1e-9)
+    assert fourth_row["expected_value"] == pytest.approx(2.1843483949, abs=1e-9)
 
     assert opportunities["expected_value"].is_monotonic_decreasing

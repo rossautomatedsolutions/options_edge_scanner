@@ -57,17 +57,29 @@ def _read_local_frame(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported file type: {path.suffix or '<no extension>'}")
 
 
-def validate_option_quote_frame(option_quotes: pd.DataFrame) -> pd.DataFrame:
+def validate_option_quote_frame(
+    option_quotes: pd.DataFrame,
+    *,
+    require_underlying_price: bool = True,
+) -> pd.DataFrame:
     """Validate and normalize a dataframe against the OptionQuoteRow contract."""
     working = option_quotes.copy()
     renames = _normalize_columns(working.columns)
     if renames:
         working = working.rename(columns=renames)
 
-    missing_columns = [column for column in OPTION_QUOTE_REQUIRED_COLUMNS if column not in working.columns]
+    required_columns = [
+        column
+        for column in OPTION_QUOTE_REQUIRED_COLUMNS
+        if require_underlying_price or column != "underlying_price"
+    ]
+    missing_columns = [column for column in required_columns if column not in working.columns]
     if missing_columns:
         missing = ", ".join(missing_columns)
         raise ValueError(f"Missing required OptionQuoteRow columns: {missing}")
+
+    if "underlying_price" not in working.columns:
+        working["underlying_price"] = pd.NA
 
     working["expiration"] = pd.to_datetime(working["expiration"], errors="coerce")
     working["ticker"] = working["ticker"].astype("string").str.upper()
@@ -78,11 +90,18 @@ def validate_option_quote_frame(option_quotes: pd.DataFrame) -> pd.DataFrame:
     for column in ("strike", "bid", "ask", "mid", "implied_vol", "underlying_price"):
         working[column] = pd.to_numeric(working[column], errors="coerce")
 
-    return working.loc[:, list(OPTION_QUOTE_REQUIRED_COLUMNS)].reset_index(drop=True)
+    return working.reset_index(drop=True)
 
 
-def load_option_quotes(path: str | Path) -> pd.DataFrame:
+def load_option_quotes(
+    path: str | Path,
+    *,
+    require_underlying_price: bool = True,
+) -> pd.DataFrame:
     """Load contract-compliant option quotes from a local CSV or parquet file."""
     file_path = Path(path)
     option_quotes = _read_local_frame(file_path)
-    return validate_option_quote_frame(option_quotes)
+    return validate_option_quote_frame(
+        option_quotes,
+        require_underlying_price=require_underlying_price,
+    )

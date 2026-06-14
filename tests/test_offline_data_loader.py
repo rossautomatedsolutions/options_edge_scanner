@@ -7,6 +7,7 @@ import pytest
 
 from options_edge_scanner.data.loader import load_option_quotes
 from options_edge_scanner.scanner.engine import build_scanner_opportunities
+from options_edge_scanner.scanner.quality_filters import OfflineScanQualitySettings
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_option_chain.csv"
@@ -78,7 +79,7 @@ def test_loaded_fixture_feeds_scanner_pipeline() -> None:
 
     opportunities = build_scanner_opportunities(option_quotes, as_of="2026-01-02")
 
-    assert len(opportunities) == 9
+    assert len(opportunities) == 7
     assert opportunities.iloc[0]["spread_type"] == "bear_put_debit"
     assert opportunities.iloc[0]["expected_value"] == pytest.approx(6.5582856562, abs=1e-9)
 
@@ -92,3 +93,62 @@ def test_alias_fixture_feeds_scanner_pipeline() -> None:
     assert opportunities.iloc[0]["ticker"] == "XYZ"
     assert {"bear_put_debit", "bull_call_debit"}.issuperset(set(opportunities["spread_type"].unique()))
     assert opportunities["expected_value"].is_monotonic_decreasing
+
+
+def test_build_scanner_opportunities_filters_far_from_spot_and_high_debit_candidates() -> None:
+    option_quotes = pd.concat(
+        [
+            load_option_quotes(FIXTURE_PATH),
+            pd.DataFrame(
+                {
+                    "ticker": ["XYZ", "XYZ"],
+                    "expiration": ["2026-02-13", "2026-02-13"],
+                    "strike": [50.0, 60.0],
+                    "type": ["call", "call"],
+                    "bid": [51.0, 42.0],
+                    "ask": [53.0, 44.0],
+                    "mid": [52.0, 43.0],
+                    "implied_vol": [0.20, 0.20],
+                    "underlying_price": [100.0, 100.0],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    default_opportunities = build_scanner_opportunities(option_quotes, as_of="2026-01-02")
+    relaxed_opportunities = build_scanner_opportunities(
+        option_quotes,
+        as_of="2026-01-02",
+        quality_settings=OfflineScanQualitySettings(
+            max_abs_moneyness_pct=1.0,
+            max_debit_fraction_of_width=0.95,
+            max_bid_ask_spread_pct=0.25,
+        ),
+    )
+
+    assert not default_opportunities.empty
+    assert ((default_opportunities["lower_strike"] == 50.0) & (default_opportunities["upper_strike"] == 60.0)).sum() == 0
+    assert ((relaxed_opportunities["lower_strike"] == 50.0) & (relaxed_opportunities["upper_strike"] == 60.0)).sum() == 1
+
+
+def test_build_scanner_opportunities_allows_near_spot_valid_calls_and_puts() -> None:
+    option_quotes = pd.DataFrame(
+        {
+            "ticker": ["XYZ"] * 8,
+            "expiration": ["2026-02-13"] * 8,
+            "strike": [95.0, 100.0, 105.0, 110.0, 95.0, 100.0, 105.0, 110.0],
+            "type": ["call", "call", "call", "call", "put", "put", "put", "put"],
+            "bid": [6.8, 5.3, 3.8, 3.3, 1.3, 2.5, 3.8, 4.5],
+            "ask": [7.2, 5.7, 4.2, 3.7, 1.7, 2.9, 4.2, 4.9],
+            "mid": [7.0, 5.5, 4.0, 3.5, 1.5, 2.7, 4.0, 4.7],
+            "implied_vol": [0.16, 0.15, 0.14, 0.13, 0.16, 0.17, 0.18, 0.19],
+            "underlying_price": [100.0] * 8,
+        }
+    )
+
+    opportunities = build_scanner_opportunities(option_quotes, as_of="2026-01-02")
+
+    assert not opportunities.empty
+    assert "bull_call_debit" in set(opportunities["spread_type"])
+    assert "bear_put_debit" in set(opportunities["spread_type"])

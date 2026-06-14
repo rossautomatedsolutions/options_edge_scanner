@@ -78,9 +78,21 @@ Notes:
 
 - this path is offline only and does not fetch live data
 - input must be a local contract-compliant `.csv` or `.parquet` file
+- input should include `underlying_price`; when it does not, provide `--spot`
 - output is a CSV artifact such as `outputs/offline_scan_sample.csv`
 - this workflow is for research, education, and decision support only
 - deterministic fixture runs should use an explicit `--as-of` date
+- conservative quality guardrails are enabled by default for demo/research realism:
+- `--max-abs-moneyness-pct 0.25`
+- `--max-debit-fraction 0.67`
+- `--max-bid-ask-spread-pct 0.25`
+- optional `--min-volume`, `--min-open-interest`, `--min-abs-delta`, and `--max-abs-delta` filters are only applied when those columns exist in the local file
+
+Example with an explicit spot override:
+
+```powershell
+python -m options_edge_scanner.cli.offline_scan --input tests/fixtures/sample_option_chain.csv --output outputs/offline_scan_sample.csv --as-of 2026-01-02 --spot 100
+```
 
 ## Offline Batch Manifest
 
