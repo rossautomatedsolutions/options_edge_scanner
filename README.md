@@ -16,6 +16,7 @@ It does not implement:
 - autonomous signal execution
 
 For a repo-local status summary of the current offline scanner surface, see [docs/offline_scanner_readiness_review.md](/C:/GitHub/options_edge_scanner/docs/offline_scanner_readiness_review.md).
+For a concise demo/runbook for the committed offline scan workflow, see [docs/offline_scanner_demo.md](/C:/GitHub/options_edge_scanner/docs/offline_scanner_demo.md).
 
 ## What Is Implemented
 
@@ -93,6 +94,8 @@ Example with an explicit spot override:
 ```powershell
 python -m options_edge_scanner.cli.offline_scan --input tests/fixtures/sample_option_chain.csv --output outputs/offline_scan_sample.csv --as-of 2026-01-02 --spot 100
 ```
+
+For an end-to-end PowerShell demo flow, including output preview and grouping commands, see [docs/offline_scanner_demo.md](/C:/GitHub/options_edge_scanner/docs/offline_scanner_demo.md).
 
 ## Offline Batch Manifest
 
