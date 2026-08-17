@@ -31,6 +31,7 @@ PROVENANCE_STRING_COLUMNS = (
     SOURCE_METADATA_PATH_COLUMN,
 )
 PROVENANCE_COLUMNS = PROVENANCE_DATETIME_COLUMNS + PROVENANCE_STRING_COLUMNS
+NULL_LIKE_STRING_VALUES = frozenset({"", "nan", "<na>", "none", "null", "nat"})
 
 
 def _normalize_timestamp_scalar(value: Any) -> pd.Timestamp | pd.NaT:
@@ -45,6 +46,52 @@ def _normalize_timestamp_series(series: pd.Series) -> pd.Series:
     """Parse one timestamp-like series into timezone-naive pandas timestamps."""
     parsed = pd.to_datetime(series, errors="coerce", utc=True)
     return parsed.dt.tz_localize(None)
+
+
+def _normalize_string_scalar(value: Any) -> str | None:
+    """Return one trimmed scalar string or None when it is null-like."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    if normalized.casefold() in NULL_LIKE_STRING_VALUES:
+        return None
+    return normalized
+
+
+def _normalize_string_series(series: pd.Series) -> pd.Series:
+    """Return one trimmed nullable string series with null-like tokens cleared."""
+    normalized = series.astype("string").str.strip()
+    null_like = normalized.str.casefold().fillna("").isin(NULL_LIKE_STRING_VALUES)
+    return normalized.mask(null_like, pd.NA)
+
+
+def _metadata_requires_snapshot_id(
+    *,
+    input_path: str | Path | None,
+    metadata_file: Path | None,
+    metadata_payload: dict[str, Any],
+) -> bool:
+    """Return whether the current sidecar is expected to carry snapshot_id."""
+    source_vendor = _normalize_string_scalar(metadata_payload.get("source_vendor"))
+    source_library = _normalize_string_scalar(metadata_payload.get("source_library"))
+    snapshot_source = _normalize_string_scalar(metadata_payload.get(SNAPSHOT_SOURCE_COLUMN))
+    if source_vendor == "yahoo_finance" or source_library == "yfinance" or snapshot_source == "yahoo_finance":
+        return True
+
+    candidate_names: list[str] = []
+    if input_path is not None:
+        candidate_names.append(Path(input_path).name)
+    if metadata_file is not None:
+        candidate_names.append(metadata_file.name.removesuffix(".meta.json"))
+    return any(name.casefold().endswith("_yahoo.csv") for name in candidate_names)
 
 
 def _is_day_precision_as_of(value: Any) -> bool:
@@ -64,7 +111,7 @@ def normalize_provenance_columns(option_quotes: pd.DataFrame) -> pd.DataFrame:
             working[column] = _normalize_timestamp_series(working[column])
     for column in PROVENANCE_STRING_COLUMNS:
         if column in working.columns:
-            working[column] = working[column].astype("string").str.strip()
+            working[column] = _normalize_string_series(working[column])
     return working
 
 
@@ -95,11 +142,8 @@ def _fill_string_column(
     overwrite: bool = False,
 ) -> pd.DataFrame:
     """Populate one provenance string column while preserving existing non-empty values."""
-    if value is None:
-        return option_quotes
-
-    normalized = str(value).strip()
-    if not normalized:
+    normalized = _normalize_string_scalar(value)
+    if normalized is None:
         return option_quotes
 
     working = option_quotes.copy()
@@ -107,8 +151,8 @@ def _fill_string_column(
         working[column] = normalized
         return working
 
-    existing = working[column].fillna("").astype("string").str.strip()
-    working[column] = existing.where(existing.ne(""), normalized)
+    existing = _normalize_string_series(working[column])
+    working[column] = existing.where(existing.notna(), normalized)
     return working
 
 
@@ -161,6 +205,13 @@ def enrich_option_quote_provenance(
             metadata_file = first_metadata_path
     if metadata_file is not None and metadata_file.exists():
         metadata_payload = _read_metadata_payload(metadata_file)
+    metadata_snapshot_id = _normalize_string_scalar(metadata_payload.get(SNAPSHOT_ID_COLUMN))
+    if _metadata_requires_snapshot_id(
+        input_path=input_path,
+        metadata_file=metadata_file,
+        metadata_payload=metadata_payload,
+    ) and metadata_snapshot_id is None:
+        raise ValueError("Yahoo option-chain metadata sidecar must include a non-empty snapshot_id.")
 
     fill_values = {
         QUOTE_OBSERVED_AT_COLUMN: metadata_payload.get(
@@ -172,6 +223,7 @@ def enrich_option_quote_provenance(
             metadata_payload.get("fetched_at_utc"),
         ),
         UNDERLYING_PRICE_SOURCE_COLUMN: metadata_payload.get(UNDERLYING_PRICE_SOURCE_COLUMN),
+        SNAPSHOT_ID_COLUMN: metadata_payload.get(SNAPSHOT_ID_COLUMN),
         SNAPSHOT_SOURCE_COLUMN: metadata_payload.get(
             SNAPSHOT_SOURCE_COLUMN,
             metadata_payload.get("source_vendor", metadata_payload.get("source")),
@@ -197,8 +249,13 @@ def enrich_option_quote_provenance(
     working = _fill_string_column(
         working,
         column=SNAPSHOT_ID_COLUMN,
+        value=fill_values.get(SNAPSHOT_ID_COLUMN),
+    )
+    working = _fill_string_column(
+        working,
+        column=SNAPSHOT_ID_COLUMN,
         value=snapshot_id,
-        overwrite=True,
+        overwrite=snapshot_id is not None,
     )
     working = _fill_string_column(
         working,

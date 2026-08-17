@@ -128,6 +128,7 @@ def test_offline_scan_cli_infers_provenance_from_metadata_sidecar(tmp_path: Path
     metadata_path.write_text(
         json.dumps(
             {
+                "snapshot_id": "XYZ_20260102T153000Z_2026-02-13",
                 "fetched_at_utc": "2026-01-02T15:30:00Z",
                 "underlying_price_observed_at": "2026-01-02T15:30:00Z",
                 "underlying_price_source": "sidecar.test",
@@ -150,6 +151,7 @@ def test_offline_scan_cli_infers_provenance_from_metadata_sidecar(tmp_path: Path
     assert exit_code == 0
     output_frame = pd.read_csv(output_path)
     assert set(output_frame["source_metadata_path"]) == {str(metadata_path)}
+    assert set(output_frame["snapshot_id"]) == {"XYZ_20260102T153000Z_2026-02-13"}
     assert set(output_frame["underlying_price_source"]) == {"sidecar.test"}
 
 

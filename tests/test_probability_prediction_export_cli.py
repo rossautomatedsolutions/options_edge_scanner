@@ -18,6 +18,7 @@ def test_probability_prediction_export_cli_writes_validated_predictions(tmp_path
     output_path = tmp_path / "predictions.csv"
 
     opportunities = build_scanner_opportunities(load_option_quotes(FIXTURE_PATH), as_of="2026-01-02")
+    opportunities["snapshot_id"] = "XYZ_20260102T153000Z_2026-02-13"
     opportunities.to_csv(opportunities_path, index=False)
 
     exit_code = main(
@@ -38,6 +39,25 @@ def test_probability_prediction_export_cli_writes_validated_predictions(tmp_path
         exported.columns
     )
     assert exported["prediction_id"].is_unique
+
+
+def test_probability_prediction_export_cli_rejects_null_like_snapshot_ids(tmp_path: Path) -> None:
+    opportunities_path = tmp_path / "opportunities_missing_snapshot.csv"
+    output_path = tmp_path / "predictions.csv"
+
+    opportunities = build_scanner_opportunities(load_option_quotes(FIXTURE_PATH), as_of="2026-01-02")
+    opportunities["snapshot_id"] = pd.NA
+    opportunities.to_csv(opportunities_path, index=False)
+
+    with pytest.raises(ValueError, match="non-empty snapshot_id"):
+        main(
+            [
+                "--opportunities",
+                str(opportunities_path),
+                "--output",
+                str(output_path),
+            ]
+        )
 
 
 def test_probability_prediction_export_cli_help_includes_expected_arguments(

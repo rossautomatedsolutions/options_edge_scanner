@@ -139,6 +139,7 @@ def test_probability_calibration_fixture_contracts_validate() -> None:
 def test_export_scanner_probability_predictions_preserves_model_event_provenance() -> None:
     option_quotes = load_option_quotes(OPTION_CHAIN_FIXTURE_PATH)
     opportunities = build_scanner_opportunities(option_quotes, as_of="2026-01-02")
+    opportunities["snapshot_id"] = "XYZ_20260102T153000Z_2026-02-13"
 
     exported = export_scanner_probability_predictions(opportunities)
 
@@ -157,6 +158,8 @@ def test_export_scanner_probability_predictions_uses_later_as_of_for_prediction_
     option_quotes = load_option_quotes(OPTION_CHAIN_FIXTURE_PATH)
     base_opportunities = build_scanner_opportunities(option_quotes, as_of="2026-01-02")
     opportunities = base_opportunities.copy()
+    base_opportunities["snapshot_id"] = "XYZ_20260102T153000Z_2026-02-13"
+    opportunities["snapshot_id"] = "XYZ_20260102T153000Z_2026-02-13"
     opportunities["as_of"] = opportunities["quote_observed_at"] + pd.Timedelta(days=1)
 
     base_exported = export_scanner_probability_predictions(base_opportunities)

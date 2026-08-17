@@ -124,11 +124,32 @@ CALIBRATION_SUMMARY_COLUMNS = (
 _FULL_TIMESTAMP_WITH_TIMEZONE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
 )
+NULL_LIKE_STRING_VALUES = frozenset({"", "nan", "<na>", "none", "null", "nat"})
+
+
+def _normalize_string_scalar(value: Any) -> str | None:
+    """Return one trimmed scalar string or None when it is null-like."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    if normalized.casefold() in NULL_LIKE_STRING_VALUES:
+        return None
+    return normalized
 
 
 def _normalize_string_series(series: pd.Series) -> pd.Series:
     """Return one trimmed nullable string series."""
-    return series.astype("string").str.strip()
+    normalized = series.astype("string").str.strip()
+    null_like = normalized.str.casefold().fillna("").isin(NULL_LIKE_STRING_VALUES)
+    return normalized.mask(null_like, pd.NA)
 
 
 def _require_non_empty_strings(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
@@ -136,7 +157,7 @@ def _require_non_empty_strings(frame: pd.DataFrame, columns: tuple[str, ...]) ->
     working = frame.copy()
     for column in columns:
         working[column] = _normalize_string_series(working[column])
-        if working[column].isna().any() or working[column].eq("").any():
+        if working[column].isna().any():
             raise ValueError(f"{column} must be present and non-empty.")
     return working
 
@@ -230,9 +251,12 @@ def build_observation_group_id(
     expiration: Any,
 ) -> str:
     """Build one correlation-group identifier for related predictions."""
+    normalized_snapshot_id = _normalize_string_scalar(snapshot_id)
+    if normalized_snapshot_id is None:
+        raise ValueError("snapshot_id must be present and non-empty.")
     return "|".join(
         [
-            str(snapshot_id).strip(),
+            normalized_snapshot_id,
             str(ticker).strip().upper(),
             format_utc_timestamp(prediction_timestamp),
             format_date_like(expiration),

@@ -20,6 +20,7 @@ from options_edge_scanner.calibration.contracts import (
     build_required_outcome_key,
     format_date_like,
     format_utc_timestamp,
+    _normalize_string_scalar,
     validate_probability_prediction_frame,
     validate_realized_outcome_frame,
 )
@@ -43,6 +44,16 @@ def _resolve_prediction_timestamp(row: dict[str, Any]) -> pd.Timestamp:
     if pd.isna(quote_observed_at) or pd.isna(as_of):
         raise ValueError("Scanner opportunities must provide valid quote_observed_at and as_of timestamps.")
     return pd.Timestamp(max(quote_observed_at, as_of)).tz_localize(None)
+
+
+def _resolve_required_snapshot_id(row: dict[str, Any]) -> str:
+    """Resolve one non-null snapshot identifier from a scanner opportunity row."""
+    snapshot_id = _normalize_string_scalar(row.get("snapshot_id"))
+    if snapshot_id is None:
+        raise ValueError(
+            "Scanner opportunities must provide a non-empty snapshot_id before probability export."
+        )
+    return snapshot_id
 
 
 def export_scanner_probability_predictions(opportunities: pd.DataFrame) -> pd.DataFrame:
@@ -76,8 +87,9 @@ def export_scanner_probability_predictions(opportunities: pd.DataFrame) -> pd.Da
     optional_columns = [column for column in PREDICTION_OPTIONAL_COLUMNS if column in opportunities.columns]
     for row in opportunities.to_dict("records"):
         prediction_timestamp = _resolve_prediction_timestamp(row)
+        snapshot_id = _resolve_required_snapshot_id(row)
         observation_group_id = build_observation_group_id(
-            snapshot_id=str(row.get("snapshot_id", "")).strip() or "unspecified_snapshot",
+            snapshot_id=snapshot_id,
             ticker=str(row["ticker"]),
             prediction_timestamp=prediction_timestamp,
             expiration=row["expiration"],
@@ -92,7 +104,7 @@ def export_scanner_probability_predictions(opportunities: pd.DataFrame) -> pd.Da
         )
         exported = {
             "prediction_id": prediction_id,
-            "snapshot_id": str(row.get("snapshot_id", "")).strip() or "unspecified_snapshot",
+            "snapshot_id": snapshot_id,
             "ticker": str(row["ticker"]).strip().upper(),
             "prediction_timestamp": format_utc_timestamp(prediction_timestamp),
             "quote_observed_at": format_utc_timestamp(row["quote_observed_at"]),
