@@ -7,6 +7,8 @@ from typing import Iterable
 
 import pandas as pd
 
+from options_edge_scanner.data.provenance import normalize_provenance_columns
+
 
 OPTION_QUOTE_REQUIRED_COLUMNS = (
     "ticker",
@@ -15,7 +17,6 @@ OPTION_QUOTE_REQUIRED_COLUMNS = (
     "type",
     "bid",
     "ask",
-    "mid",
     "implied_vol",
     "underlying_price",
 )
@@ -87,9 +88,17 @@ def validate_option_quote_frame(
         working["type"].astype("string").str.strip().str.lower().replace({"c": "call", "p": "put"})
     )
 
-    for column in ("strike", "bid", "ask", "mid", "implied_vol", "underlying_price"):
+    for column in ("strike", "bid", "ask", "implied_vol", "underlying_price"):
         working[column] = pd.to_numeric(working[column], errors="coerce")
+    if "mid" in working.columns:
+        working["mid"] = pd.to_numeric(working["mid"], errors="coerce")
+    else:
+        working["mid"] = pd.NA
 
+    derived_mid = (working["bid"] + working["ask"]) / 2.0
+    working.loc[working["mid"].isna(), "mid"] = derived_mid.loc[working["mid"].isna()]
+
+    working = normalize_provenance_columns(working)
     return working.reset_index(drop=True)
 
 

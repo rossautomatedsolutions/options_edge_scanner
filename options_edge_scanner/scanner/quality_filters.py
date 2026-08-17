@@ -15,10 +15,19 @@ class OfflineScanQualitySettings:
     max_abs_moneyness_pct: float | None = 0.25
     max_debit_fraction_of_width: float | None = 0.67
     max_bid_ask_spread_pct: float | None = 0.25
+    max_spread_market_width_pct: float | None = 0.8
     min_volume: float | None = None
     min_open_interest: float | None = None
     min_abs_delta: float | None = None
     max_abs_delta: float | None = None
+    min_liquidity_score: float | None = None
+    execution_slippage_floor: float = 0.2
+    execution_slippage_cap: float = 0.5
+    min_expected_value: float = 0.0
+    min_probability_of_profit: float = 0.3
+    top_n: int = 20
+    max_positions_per_ticker: int | None = None
+    max_positions_per_expiration: int | None = None
 
 
 def _find_column(columns: Iterable[str], candidates: list[str]) -> str | None:
@@ -111,12 +120,36 @@ def apply_spread_quality_filters(
     settings: OfflineScanQualitySettings,
 ) -> pd.DataFrame:
     """Filter spread rows that are structurally poor demo/research candidates."""
-    if spreads.empty or settings.max_debit_fraction_of_width is None:
+    if spreads.empty:
         return spreads.copy()
 
     working = spreads.copy()
-    debit_fraction = pd.to_numeric(working["debit"], errors="coerce") / pd.to_numeric(
-        working["width"],
-        errors="coerce",
-    )
-    return working.loc[debit_fraction.le(settings.max_debit_fraction_of_width)].reset_index(drop=True)
+    keep_mask = pd.Series(True, index=working.index)
+
+    debit = pd.to_numeric(working.get("debit"), errors="coerce")
+    width = pd.to_numeric(working.get("width"), errors="coerce")
+    max_profit = pd.to_numeric(working.get("max_profit"), errors="coerce")
+    keep_mask &= debit.gt(0) & width.gt(0) & debit.lt(width) & max_profit.gt(0)
+
+    if settings.max_debit_fraction_of_width is not None:
+        debit_fraction = debit / width
+        keep_mask &= debit_fraction.le(settings.max_debit_fraction_of_width)
+
+    if (
+        settings.max_spread_market_width_pct is not None
+        and "spread_market_width" in working.columns
+    ):
+        quoted_debit = pd.to_numeric(
+            working.get("quoted_debit", working.get("debit")),
+            errors="coerce",
+        )
+        spread_market_width = pd.to_numeric(working["spread_market_width"], errors="coerce")
+        relative_market_width = spread_market_width / quoted_debit
+        keep_mask &= quoted_debit.gt(0) & spread_market_width.ge(0)
+        keep_mask &= relative_market_width.le(settings.max_spread_market_width_pct)
+
+    if settings.min_liquidity_score is not None and "liquidity_score" in working.columns:
+        liquidity_score = pd.to_numeric(working["liquidity_score"], errors="coerce")
+        keep_mask &= liquidity_score.ge(settings.min_liquidity_score)
+
+    return working.loc[keep_mask].reset_index(drop=True)

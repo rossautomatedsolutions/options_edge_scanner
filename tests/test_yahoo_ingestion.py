@@ -120,16 +120,26 @@ def test_ingestion_writes_normalized_csv_and_metadata_sidecar(tmp_path: Path) ->
         "mid",
         "implied_vol",
         "underlying_price",
+        "quote_observed_at",
+        "underlying_price_observed_at",
+        "underlying_price_source",
     ]
     assert len(quotes) == 4
     assert set(quotes["type"].tolist()) == {"call", "put"}
     assert quotes["ticker"].tolist() == ["SPY", "SPY", "SPY", "SPY"]
+    assert pd.api.types.is_datetime64_any_dtype(quotes["quote_observed_at"])
     assert metadata["source_vendor"] == "yahoo_finance"
+    assert metadata["snapshot_source"] == "yahoo_finance"
     assert metadata["ticker_normalized"] == "SPY"
     assert metadata["expiration_resolved"] == "2026-06-20"
+    assert metadata["expiration_start"] == "2026-06-20"
+    assert metadata["expiration_end"] == "2026-06-20"
     assert metadata["calls_row_count"] == 2
     assert metadata["puts_row_count"] == 2
     assert metadata["normalized_row_count"] == 4
+    assert metadata["quote_observed_at"] == "2026-06-12T15:30:00Z"
+    assert metadata["snapshot_id"] == "SPY_20260612T153000Z_2026-06-20"
+    assert metadata["underlying_price_observed_at"] != ""
     assert metadata["raw_payload_written"] is True
     assert metadata["cache_hit"] is False
 
@@ -152,6 +162,24 @@ def test_ingestion_uses_nearest_expiration_when_requested(tmp_path: Path) -> Non
     assert metadata["expiration_requested"] == "nearest"
     assert metadata["expiration_resolved"] == "2026-06-20"
     assert result.csv_path.name == "SPY_2026-06-20_yahoo.csv"
+
+
+def test_ingestion_preserves_subsecond_precision_in_snapshot_id(tmp_path: Path) -> None:
+    fake_yf = _FakeYFinanceModule(
+        options=["2026-06-20"],
+        chains={"2026-06-20": _build_chain(_sample_calls(), _sample_puts())},
+    )
+
+    result = ingest_yahoo_option_chain(
+        ticker="SPY",
+        requested_expiration="2026-06-20",
+        output_dir=tmp_path,
+        yf_module=fake_yf,
+        now=datetime(2026, 6, 12, 15, 30, 0, 123456, tzinfo=timezone.utc),
+    )
+
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["snapshot_id"] == "SPY_20260612T153000.123456Z_2026-06-20"
 
 
 def test_ingestion_fails_for_missing_requested_expiration(tmp_path: Path) -> None:

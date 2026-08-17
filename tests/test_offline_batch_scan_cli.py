@@ -34,7 +34,7 @@ def test_offline_batch_scan_cli_writes_ranked_output(tmp_path: Path) -> None:
     output_frame = pd.read_csv(output_path)
 
     assert list(output_frame.columns) == SCANNER_OUTPUT_COLUMNS
-    assert len(output_frame) == 7
+    assert len(output_frame) == 4
 
 
 def test_offline_batch_scan_cli_writes_summary_csv(tmp_path: Path) -> None:
@@ -68,7 +68,7 @@ def test_offline_batch_scan_cli_writes_summary_csv(tmp_path: Path) -> None:
     assert list(summary_frame.columns) == list(SUMMARY_OUTPUT_COLUMNS)
     assert len(summary_frame) == 1
     assert summary_frame.iloc[0]["status"] == "success"
-    assert summary_frame.iloc[0]["row_count"] == 7
+    assert summary_frame.iloc[0]["row_count"] == 4
     assert pd.isna(summary_frame.iloc[0]["error_message"]) or summary_frame.iloc[0]["error_message"] == ""
 
 
@@ -125,40 +125,14 @@ def test_offline_batch_scan_cli_continues_and_records_failed_rows(tmp_path: Path
 
     assert len(summary_frame) == 2
     assert summary_frame.iloc[0]["status"] == "success"
-    assert summary_frame.iloc[0]["row_count"] == 7
+    assert summary_frame.iloc[0]["row_count"] == 4
     assert summary_frame.iloc[1]["status"] == "failed"
     assert summary_frame.iloc[1]["row_count"] == 0
     assert "does not exist" in str(summary_frame.iloc[1]["error_message"])
 
 
-def test_offline_batch_scan_cli_accepts_manifest_paths_exactly_as_provided_when_cwd_resolves_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    output_path = tmp_path / "offline_batch_scan_sample.csv"
-    manifest_path = tmp_path / "offline_scan_manifest.csv"
-    monkeypatch.chdir(REPO_ROOT)
-    pd.DataFrame(
-        [
-            {
-                "input_path": "tests/fixtures/sample_option_chain.csv",
-                "output_path": str(output_path),
-                "as_of": "2026-01-02",
-            }
-        ]
-    ).to_csv(manifest_path, index=False)
-
-    exit_code = main(["--manifest", str(manifest_path)])
-
-    assert exit_code == 0
-    assert output_path.exists()
-
-    output_frame = pd.read_csv(output_path)
-    assert list(output_frame.columns) == SCANNER_OUTPUT_COLUMNS
-    assert len(output_frame) == 7
-
-
-def test_offline_batch_scan_cli_does_not_resolve_input_paths_relative_to_manifest_location(
-    tmp_path: Path,
+def test_offline_batch_scan_cli_resolves_manifest_paths_relative_to_manifest_location(
+    tmp_path: Path
 ) -> None:
     manifest_dir = tmp_path / "manifest_dir"
     manifest_dir.mkdir()
@@ -169,13 +143,40 @@ def test_offline_batch_scan_cli_does_not_resolve_input_paths_relative_to_manifes
         [
             {
                 "input_path": "sample_option_chain.csv",
+                "output_path": "relative_output.csv",
+                "as_of": "2026-01-02",
+            }
+        ]
+    ).to_csv(manifest_path, index=False)
+
+    exit_code = main(["--manifest", str(manifest_path)])
+
+    assert exit_code == 0
+    output_path = manifest_dir / "relative_output.csv"
+    assert output_path.exists()
+
+    output_frame = pd.read_csv(output_path)
+    assert list(output_frame.columns) == SCANNER_OUTPUT_COLUMNS
+    assert len(output_frame) == 4
+
+
+def test_offline_batch_scan_cli_rejects_paths_missing_from_manifest_location_even_if_cwd_can_resolve_them(
+    tmp_path: Path,
+) -> None:
+    manifest_dir = tmp_path / "manifest_dir"
+    manifest_dir.mkdir()
+    manifest_path = manifest_dir / "offline_scan_manifest.csv"
+    pd.DataFrame(
+        [
+            {
+                "input_path": "tests/fixtures/sample_option_chain.csv",
                 "output_path": str(tmp_path / "unused.csv"),
                 "as_of": "2026-01-02",
             }
         ]
     ).to_csv(manifest_path, index=False)
 
-    with pytest.raises(FileNotFoundError, match="Manifest row 1 input file does not exist: sample_option_chain.csv"):
+    with pytest.raises(FileNotFoundError, match="Manifest row 1 input file does not exist:"):
         main(["--manifest", str(manifest_path)])
 
 
@@ -191,3 +192,4 @@ def test_offline_batch_scan_cli_help_includes_expected_arguments(
     assert "--manifest" in captured.out
     assert "--summary-output" in captured.out
     assert "--continue-on-error" in captured.out
+    assert "--max-spread-market-width-pct" in captured.out

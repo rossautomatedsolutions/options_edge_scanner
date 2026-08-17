@@ -1,19 +1,28 @@
-"""Configuration settings for the options edge scanner project."""
+"""Configuration settings for the maintained offline scanner workflow."""
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from options_edge_scanner.scanner.quality_filters import OfflineScanQualitySettings
 
 
-@dataclass
+@dataclass(frozen=True)
 class ScannerConfig:
-    """Container for scanner configuration parameters."""
+    """Configuration for one offline local-file scanner run."""
 
-    symbol_universe: list[str]
-    lookback_days: int
-    risk_free_rate: float
-
+    input_path: str | Path = ""
+    output_path: str | Path | None = None
+    report_output_path: str | Path | None = None
+    as_of: str | None = None
+    spot: float | None = None
+    spot_observed_at: str | None = None
+    spot_source: str | None = None
+    allow_unsafe_as_of: bool = False
+    quality_settings: OfflineScanQualitySettings = field(default_factory=OfflineScanQualitySettings)
 
 
 def get_default_config() -> ScannerConfig:
     """Return default project configuration values."""
-    # TODO: Replace placeholder defaults with environment-driven configuration.
-    return ScannerConfig(symbol_universe=[], lookback_days=30, risk_free_rate=0.0)
+    return ScannerConfig()

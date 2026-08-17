@@ -94,6 +94,18 @@ def _default_output_path(ticker: str, resolved_expiration: str) -> Path:
     return DEFAULT_OUTPUT_ROOT / ticker / f"{ticker}_{resolved_expiration}_yahoo.csv"
 
 
+def _build_snapshot_id(ticker: str, resolved_expiration: str, quote_observed_at: str) -> str:
+    """Build one stable snapshot identifier for locally persisted Yahoo artifacts."""
+    parsed_quote_observed_at = pd.to_datetime(quote_observed_at, errors="coerce", utc=True)
+    if pd.isna(parsed_quote_observed_at):
+        normalized_timestamp = quote_observed_at.replace(":", "").replace("-", "").replace(".", "")
+    else:
+        normalized_timestamp = parsed_quote_observed_at.strftime(
+            "%Y%m%dT%H%M%S.%fZ" if parsed_quote_observed_at.microsecond else "%Y%m%dT%H%M%SZ"
+        )
+    return f"{ticker}_{normalized_timestamp}_{resolved_expiration}"
+
+
 def _resolve_output_path(
     *,
     ticker: str,
@@ -154,7 +166,7 @@ def _deserialize_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 def _safe_underlying_price(ticker_obj: Any) -> float:
-    """Get one numeric underlying close reference."""
+    """Get one numeric underlying close reference plus its observed timestamp."""
     history = ticker_obj.history(period="1d")
     if history is None or history.empty or "Close" not in history.columns:
         raise YahooIngestionError(
@@ -172,7 +184,12 @@ def _safe_underlying_price(ticker_obj: Any) -> float:
         raise YahooIngestionError(
             "Yahoo returned no usable underlying price history for the requested ticker."
         )
-    return price
+    observed_at = pd.to_datetime(history.index[-1], errors="coerce", utc=True)
+    if pd.isna(observed_at):
+        observed_at_str = ""
+    else:
+        observed_at_str = observed_at.tz_convert(None).isoformat() + "Z"
+    return price, observed_at_str
 
 
 def _validate_raw_columns(frame: pd.DataFrame, side: str) -> None:
@@ -195,6 +212,9 @@ def _normalize_side(
     expiration: str,
     option_type: str,
     underlying_price: float,
+    quote_observed_at: str,
+    underlying_price_observed_at: str,
+    underlying_price_source: str,
 ) -> pd.DataFrame:
     """Normalize one Yahoo option side into the canonical OptionQuoteRow contract."""
     if frame is None or frame.empty:
@@ -213,6 +233,9 @@ def _normalize_side(
             / 2.0,
             "implied_vol": frame["impliedVolatility"],
             "underlying_price": underlying_price,
+            "quote_observed_at": quote_observed_at,
+            "underlying_price_observed_at": underlying_price_observed_at,
+            "underlying_price_source": underlying_price_source,
         }
     )
     return validate_option_quote_frame(normalized)
@@ -223,6 +246,11 @@ def _normalize_payload(payload: dict[str, Any]) -> pd.DataFrame:
     ticker = _normalize_ticker(payload["ticker"])
     resolved_expiration = _parse_expiration(payload["resolved_expiration"]).strftime("%Y-%m-%d")
     underlying_price = float(payload["underlying_price"])
+    quote_observed_at = str(payload.get("quote_observed_at", payload.get("fetched_at_utc", "")))
+    underlying_price_observed_at = str(
+        payload.get("underlying_price_observed_at", payload.get("fetched_at_utc", ""))
+    )
+    underlying_price_source = str(payload.get("underlying_price_source", "history.close"))
 
     if not math.isfinite(underlying_price):
         raise YahooIngestionError("Underlying price is required and must be numeric.")
@@ -238,6 +266,9 @@ def _normalize_payload(payload: dict[str, Any]) -> pd.DataFrame:
         expiration=resolved_expiration,
         option_type="call",
         underlying_price=underlying_price,
+        quote_observed_at=quote_observed_at,
+        underlying_price_observed_at=underlying_price_observed_at,
+        underlying_price_source=underlying_price_source,
     )
     normalized_puts = _normalize_side(
         puts,
@@ -245,6 +276,9 @@ def _normalize_payload(payload: dict[str, Any]) -> pd.DataFrame:
         expiration=resolved_expiration,
         option_type="put",
         underlying_price=underlying_price,
+        quote_observed_at=quote_observed_at,
+        underlying_price_observed_at=underlying_price_observed_at,
+        underlying_price_source=underlying_price_source,
     )
     combined = pd.concat([normalized_calls, normalized_puts], ignore_index=True)
     if combined.empty:
@@ -262,6 +296,8 @@ def _build_payload(
     requested_expiration: str,
     resolved_expiration: str,
     underlying_price: float,
+    quote_observed_at: str,
+    underlying_price_observed_at: str,
     calls: pd.DataFrame,
     puts: pd.DataFrame,
     fetched_at: datetime,
@@ -274,7 +310,9 @@ def _build_payload(
         "requested_expiration": requested_expiration,
         "resolved_expiration": resolved_expiration,
         "fetched_at_utc": fetched_at.isoformat().replace("+00:00", "Z"),
+        "quote_observed_at": quote_observed_at,
         "underlying_price": underlying_price,
+        "underlying_price_observed_at": underlying_price_observed_at,
         "underlying_price_source": "history.close",
         "calls_columns": list(calls.columns),
         "puts_columns": list(puts.columns),
@@ -321,12 +359,14 @@ def _fetch_live_payload(
     if (calls is None or calls.empty) and (puts is None or puts.empty):
         raise YahooIngestionError("Yahoo returned an empty option chain for the requested ticker.")
 
-    underlying_price = _safe_underlying_price(ticker_obj)
+    underlying_price, underlying_price_observed_at = _safe_underlying_price(ticker_obj)
     return _build_payload(
         ticker=ticker,
         requested_expiration=requested_expiration,
         resolved_expiration=resolved_expiration,
         underlying_price=underlying_price,
+        quote_observed_at=now.isoformat().replace("+00:00", "Z"),
+        underlying_price_observed_at=underlying_price_observed_at,
         calls=calls if calls is not None else pd.DataFrame(),
         puts=puts if puts is not None else pd.DataFrame(),
         fetched_at=now,
@@ -414,6 +454,12 @@ def ingest_yahoo_option_chain(
         raw_payload_written = True
 
     metadata = {
+        "snapshot_id": _build_snapshot_id(
+            normalized_ticker,
+            resolved_expiration,
+            payload["quote_observed_at"],
+        ),
+        "snapshot_source": payload["source_vendor"],
         "source_vendor": payload["source_vendor"],
         "source_library": payload["source_library"],
         "source_library_version": getattr(active_yf_module, "__version__", "unknown"),
@@ -421,8 +467,15 @@ def ingest_yahoo_option_chain(
         "ticker_normalized": normalized_ticker,
         "expiration_requested": requested_expiration,
         "expiration_resolved": resolved_expiration,
+        "expiration_start": resolved_expiration,
+        "expiration_end": resolved_expiration,
         "fetched_at_utc": payload["fetched_at_utc"],
+        "quote_observed_at": payload["quote_observed_at"],
         "underlying_price": payload["underlying_price"],
+        "underlying_price_observed_at": payload.get(
+            "underlying_price_observed_at",
+            payload["fetched_at_utc"],
+        ),
         "underlying_price_source": payload["underlying_price_source"],
         "calls_row_count": len(payload.get("calls_records", [])),
         "puts_row_count": len(payload.get("puts_records", [])),

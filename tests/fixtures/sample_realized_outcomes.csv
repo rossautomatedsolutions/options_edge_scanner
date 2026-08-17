@@ -1,0 +1,5 @@
+outcome_id,required_outcome_key,ticker,expiration,required_outcome_horizon,realized_outcome_measure,realized_terminal_underlying_price,realized_outcome_observed_at,realized_outcome_source
+out_001,XYZ|2026-02-13|expiration|terminal_underlying_price,XYZ,2026-02-13,expiration,terminal_underlying_price,101.0,2026-02-13T20:00:00Z,fixture.expiration
+out_002,ABC|2026-02-20|expiration|terminal_underlying_price,ABC,2026-02-20,expiration,terminal_underlying_price,109.0,2026-02-20T20:00:00Z,fixture.expiration
+out_003,DEF|2026-03-20|expiration|terminal_underlying_price,DEF,2026-03-20,expiration,terminal_underlying_price,48.0,2026-03-20T20:00:00Z,fixture.expiration
+out_004,IWM|2026-04-17|expiration|terminal_underlying_price,IWM,2026-04-17,expiration,terminal_underlying_price,170.0,2026-04-17T20:00:00Z,fixture.expiration

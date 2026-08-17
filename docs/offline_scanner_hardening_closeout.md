@@ -1,5 +1,9 @@
 # Offline Scanner Hardening Closeout
 
+Historical note:
+This document records a June 11, 2026 checkpoint.
+For the current repo-local status, use [offline_scanner_readiness_review.md](offline_scanner_readiness_review.md).
+
 ## Synced Commit Evidence
 
 - Canonical local repo reviewed: `C:\GitHub\options_edge_scanner`

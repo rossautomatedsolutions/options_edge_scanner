@@ -5,6 +5,28 @@ import pytest
 from options_edge_scanner.models.spread_ev_calculator import TRANSACTION_COST, calculate_expected_value
 
 
+def _normal_cdf(value: float) -> float:
+    return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
+
+
+def _call_expectation(spot: float, strike: float, implied_vol: float, time_to_expiration: float) -> float:
+    sigma_t = implied_vol * math.sqrt(time_to_expiration)
+    d1 = (
+        math.log(spot / strike) + (0.5 * implied_vol * implied_vol * time_to_expiration)
+    ) / sigma_t
+    d2 = d1 - sigma_t
+    return (spot * _normal_cdf(d1)) - (strike * _normal_cdf(d2))
+
+
+def _put_expectation(spot: float, strike: float, implied_vol: float, time_to_expiration: float) -> float:
+    sigma_t = implied_vol * math.sqrt(time_to_expiration)
+    d1 = (
+        math.log(spot / strike) + (0.5 * implied_vol * implied_vol * time_to_expiration)
+    ) / sigma_t
+    d2 = d1 - sigma_t
+    return (strike * _normal_cdf(-d2)) - (spot * _normal_cdf(-d1))
+
+
 @pytest.mark.parametrize(
     ("spread", "max_profit", "max_loss"),
     [
@@ -291,3 +313,55 @@ def test_binary_fallback_compatibility() -> None:
 
     assert math.isclose(result["expected_value"], expected)
     assert result["ev_method"] == "binary"
+
+
+def test_exact_lognormal_ev_matches_call_spread_expectation() -> None:
+    spread = {
+        "spread_type": "bull_call_debit",
+        "lower_strike": 100.0,
+        "upper_strike": 110.0,
+        "debit": 3.0,
+        "max_profit": 7.0,
+        "underlying_price": 100.0,
+        "implied_volatility": 0.20,
+        "days_to_expiration": 30.0,
+    }
+
+    result = calculate_expected_value(spread)
+    expected_payoff = _call_expectation(100.0, 100.0, 0.20, 30.0 / 252.0) - _call_expectation(
+        100.0,
+        110.0,
+        0.20,
+        30.0 / 252.0,
+    )
+    expected_value = expected_payoff - 3.0 - TRANSACTION_COST
+
+    assert result["ev_method"] == "lognormal_vertical_exact"
+    assert math.isclose(result["expected_value"], expected_value, rel_tol=0, abs_tol=1e-12)
+    assert result["avg_profit"] > 0.0
+    assert result["avg_loss"] < 0.0
+
+
+def test_exact_lognormal_ev_matches_put_spread_expectation() -> None:
+    spread = {
+        "spread_type": "bear_put_debit",
+        "lower_strike": 100.0,
+        "upper_strike": 110.0,
+        "debit": 2.0,
+        "max_profit": 8.0,
+        "underlying_price": 100.0,
+        "implied_volatility": 0.25,
+        "days_to_expiration": 45.0,
+    }
+
+    result = calculate_expected_value(spread)
+    expected_payoff = _put_expectation(100.0, 110.0, 0.25, 45.0 / 252.0) - _put_expectation(
+        100.0,
+        100.0,
+        0.25,
+        45.0 / 252.0,
+    )
+    expected_value = expected_payoff - 2.0 - TRANSACTION_COST
+
+    assert result["ev_method"] == "lognormal_vertical_exact"
+    assert math.isclose(result["expected_value"], expected_value, rel_tol=0, abs_tol=1e-12)

@@ -1,5 +1,9 @@
 # Yahoo Option-Chain Ingestion Design
 
+Historical note:
+This design note predates the current implementation.
+The implemented Yahoo snapshot utility now lives in `options_edge_scanner.yahoo_ingestion` and remains optional upstream artifact generation only.
+
 ## Status
 
 Proposed only. This document defines an optional ingestion utility design for Yahoo Finance option-chain snapshots.
@@ -297,6 +301,7 @@ Recommended additional data-quality checks:
 ## Metadata And Provenance
 
 Because the scanner input contract should stay narrow, provenance should be captured in a sidecar metadata file rather than expanding the scanner CSV.
+The strict historical snapshot path expects that sidecar to carry its own `snapshot_id`.
 
 Recommended sidecar path:
 
@@ -304,6 +309,8 @@ Recommended sidecar path:
 
 Recommended metadata fields:
 
+- `snapshot_id`
+- `snapshot_source`
 - `source_vendor`
   - `yahoo_finance`
 - `source_library`
@@ -313,8 +320,12 @@ Recommended metadata fields:
 - `ticker_normalized`
 - `expiration_requested`
 - `expiration_resolved`
+- `expiration_start`
+- `expiration_end`
 - `fetched_at_utc`
+- `quote_observed_at`
 - `underlying_price`
+- `underlying_price_observed_at`
 - `underlying_price_source`
   - for example `history.close`
 - `calls_row_count`

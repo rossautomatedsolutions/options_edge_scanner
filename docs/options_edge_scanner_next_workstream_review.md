@@ -1,5 +1,9 @@
 # Options Edge Scanner Next Workstream Review
 
+Historical note:
+This document records an earlier June 2026 planning snapshot.
+For the current repo-local status, use [offline_scanner_readiness_review.md](offline_scanner_readiness_review.md).
+
 ## Current Synced Commit Evidence
 
 - Canonical local repo reviewed: `C:\GitHub\options_edge_scanner`

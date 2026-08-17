@@ -1,8 +1,9 @@
-"""Utilities for loading and normalizing option-chain data."""
+"""Legacy live option-chain loader kept for narrow compatibility only."""
 
 from __future__ import annotations
 
 import importlib
+from datetime import datetime, timezone
 from typing import Any, List
 
 import pandas as pd
@@ -18,6 +19,9 @@ OUTPUT_COLUMNS = [
     "mid",
     "implied_vol",
     "underlying_price",
+    "quote_observed_at",
+    "underlying_price_observed_at",
+    "underlying_price_source",
 ]
 
 
@@ -28,6 +32,8 @@ def _normalize_side(
     expiration: str,
     option_type: str,
     underlying_price: float,
+    quote_observed_at: str,
+    underlying_price_observed_at: str,
 ) -> pd.DataFrame:
     """Normalize one side of an option chain (calls or puts)."""
     if frame is None or frame.empty:
@@ -43,35 +49,45 @@ def _normalize_side(
             "ask": frame.get("ask"),
             "implied_vol": frame.get("impliedVolatility"),
             "underlying_price": underlying_price,
+            "quote_observed_at": quote_observed_at,
+            "underlying_price_observed_at": underlying_price_observed_at,
+            "underlying_price_source": "history.close",
         }
     )
 
     for col in ("strike", "bid", "ask", "implied_vol", "underlying_price"):
         normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
 
-    normalized["bid"] = normalized["bid"].fillna(0.0)
-    normalized["ask"] = normalized["ask"].fillna(0.0)
     normalized["mid"] = (normalized["bid"] + normalized["ask"]) / 2.0
     normalized["expiration"] = pd.to_datetime(normalized["expiration"], errors="coerce")
+    normalized["quote_observed_at"] = pd.to_datetime(normalized["quote_observed_at"], errors="coerce")
+    normalized["underlying_price_observed_at"] = pd.to_datetime(
+        normalized["underlying_price_observed_at"],
+        errors="coerce",
+    )
 
     return normalized[OUTPUT_COLUMNS]
 
 
-def _safe_underlying_price(ticker_obj: Any) -> float:
-    """Get the latest underlying price if available."""
+def _safe_underlying_price(ticker_obj: Any) -> tuple[float, str]:
+    """Get the latest underlying price plus its observed timestamp."""
     history = ticker_obj.history(period="1d")
     if history.empty:
-        return float("nan")
+        return float("nan"), ""
 
     close = pd.to_numeric(history["Close"], errors="coerce").dropna()
     if close.empty:
-        return float("nan")
+        return float("nan"), ""
 
-    return float(close.iloc[-1])
+    observed_at = pd.to_datetime(history.index[-1], errors="coerce", utc=True)
+    observed_at_str = ""
+    if not pd.isna(observed_at):
+        observed_at_str = observed_at.tz_convert(None).isoformat() + "Z"
+    return float(close.iloc[-1]), observed_at_str
 
 
 def load_option_chain(ticker: str) -> pd.DataFrame:
-    """Load calls and puts for all expirations into a clean dataframe."""
+    """Load calls and puts for all expirations into a research-only dataframe."""
     yf = importlib.import_module("yfinance")
     ticker_obj = yf.Ticker(ticker)
     expirations = list(ticker_obj.options or [])
@@ -79,7 +95,8 @@ def load_option_chain(ticker: str) -> pd.DataFrame:
     if not expirations:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
-    underlying_price = _safe_underlying_price(ticker_obj)
+    quote_observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    underlying_price, underlying_price_observed_at = _safe_underlying_price(ticker_obj)
     all_frames: List[pd.DataFrame] = []
 
     for expiration in expirations:
@@ -90,6 +107,8 @@ def load_option_chain(ticker: str) -> pd.DataFrame:
             expiration=expiration,
             option_type="call",
             underlying_price=underlying_price,
+            quote_observed_at=quote_observed_at,
+            underlying_price_observed_at=underlying_price_observed_at,
         )
         puts = _normalize_side(
             chain.puts,
@@ -97,6 +116,8 @@ def load_option_chain(ticker: str) -> pd.DataFrame:
             expiration=expiration,
             option_type="put",
             underlying_price=underlying_price,
+            quote_observed_at=quote_observed_at,
+            underlying_price_observed_at=underlying_price_observed_at,
         )
         all_frames.extend([calls, puts])
 
