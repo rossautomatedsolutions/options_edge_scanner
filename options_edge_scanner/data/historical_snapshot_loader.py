@@ -746,7 +746,11 @@ def load_historical_snapshot(spec: HistoricalSnapshotSpec) -> HistoricalSnapshot
             f"received {quote_observed_at} and {underlying_price_observed_at}."
         )
 
-    option_quotes = load_option_quotes(spec.chain_path, require_underlying_price=False)
+    option_quotes = load_option_quotes(
+        spec.chain_path,
+        require_underlying_price=False,
+        default_ticker=spec.ticker,
+    )
     existing_chain_snapshot_id = _resolve_optional_consistent_string(
         option_quotes,
         column=SNAPSHOT_ID_COLUMN,

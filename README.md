@@ -20,6 +20,7 @@ Current repo-local status is summarized in [docs/offline_scanner_readiness_revie
 The latest offline gap audit and main-machine gate live in [docs/offline_gap_audit_2026-08-17.md](docs/offline_gap_audit_2026-08-17.md).
 The maintained demo/runbook lives in [docs/offline_scanner_demo.md](docs/offline_scanner_demo.md).
 The notebook walkthrough lives in [notebooks/01_offline_scanner_demo.ipynb](notebooks/01_offline_scanner_demo.ipynb).
+The current Trading Foundation historical-data integration status lives in [docs/HISTORICAL_OPTIONS_DATA_STATUS.md](docs/HISTORICAL_OPTIONS_DATA_STATUS.md).
 
 ## What Is Implemented
 
@@ -35,9 +36,11 @@ The notebook walkthrough lives in [notebooks/01_offline_scanner_demo.ipynb](note
 - machine-readable JSON scan reports in [options_edge_scanner/scanner/reporting.py](options_edge_scanner/scanner/reporting.py)
 - offline single-run and batch CLIs in [options_edge_scanner/cli/offline_scan.py](options_edge_scanner/cli/offline_scan.py) and [options_edge_scanner/cli/offline_batch_scan.py](options_edge_scanner/cli/offline_batch_scan.py)
 - strict historical snapshot manifests, loaders, and multi-snapshot scanning in [options_edge_scanner/data/historical_snapshot_loader.py](options_edge_scanner/data/historical_snapshot_loader.py) and [options_edge_scanner/cli/historical_snapshot_scan.py](options_edge_scanner/cli/historical_snapshot_scan.py)
+- canonical Trading Foundation manifest/metadata generation against raw `historical_data/<TICKER>/option_snapshot/*.csv` files in [options_edge_scanner/data/trading_foundation.py](options_edge_scanner/data/trading_foundation.py) and [options_edge_scanner/cli/trading_foundation_snapshot_manifest.py](options_edge_scanner/cli/trading_foundation_snapshot_manifest.py)
 - research-only probability calibration contracts, prediction export, forward-only evaluation helpers, and offline CLIs in [options_edge_scanner/calibration](options_edge_scanner/calibration), [options_edge_scanner/cli/export_probability_predictions.py](options_edge_scanner/cli/export_probability_predictions.py), [options_edge_scanner/cli/probability_calibration_eval.py](options_edge_scanner/cli/probability_calibration_eval.py), and [docs/calibration_contracts.md](docs/calibration_contracts.md)
 - explicit SPY expiration-close terminal outcome semantics in [options_edge_scanner/calibration/terminal_semantics.py](options_edge_scanner/calibration/terminal_semantics.py)
 - provider-neutral realized underlying contracts and Alpaca historical stock-bar normalization in [options_edge_scanner/data/realized_underlying.py](options_edge_scanner/data/realized_underlying.py), [options_edge_scanner/data/alpaca_historical.py](options_edge_scanner/data/alpaca_historical.py), and [options_edge_scanner/cli/alpaca_realized_underlying_acquire.py](options_edge_scanner/cli/alpaca_realized_underlying_acquire.py)
+- canonical Trading Foundation EOD normalization into the same realized-underlying contract in [options_edge_scanner/data/trading_foundation.py](options_edge_scanner/data/trading_foundation.py) and [options_edge_scanner/cli/trading_foundation_realized_underlying_export.py](options_edge_scanner/cli/trading_foundation_realized_underlying_export.py)
 - strict realized outcome materialization from historical snapshot manifests plus normalized underlying artifacts in [options_edge_scanner/calibration/materialization.py](options_edge_scanner/calibration/materialization.py) and [options_edge_scanner/cli/materialize_realized_outcomes.py](options_edge_scanner/cli/materialize_realized_outcomes.py)
 - optional Yahoo snapshot ingestion with metadata sidecars in [options_edge_scanner/yahoo_ingestion.py](options_edge_scanner/yahoo_ingestion.py)
 - contract and fixture coverage in [docs/data_contracts.md](docs/data_contracts.md) and [tests/fixtures](tests/fixtures)
@@ -106,6 +109,29 @@ The historical manifest path:
 - emits per-snapshot success/failure accounting
 - does not offer an unsafe historical bypass
 
+For canonical Trading Foundation daily historical inputs, first build a strict manifest that points at raw upstream snapshots without copying the chain CSVs:
+
+```powershell
+python -m options_edge_scanner.cli.trading_foundation_snapshot_manifest `
+  --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data `
+  --ticker SPY `
+  --snapshot-date 2025-05-27 `
+  --snapshot-date 2025-05-28 `
+  --manifest-output outputs/trading_foundation/spy_manifest.csv
+
+python -m options_edge_scanner.cli.historical_snapshot_scan `
+  --manifest outputs/trading_foundation/spy_manifest.csv `
+  --output outputs/trading_foundation/spy_candidates.csv `
+  --summary-output outputs/trading_foundation/spy_summary.csv
+```
+
+That adapter path:
+
+- reuses the repo's strict manifest contract and existing historical scanner
+- parses `option_symbol` plus Trading Foundation `bid_price`/`ask_price` fields into the repo's canonical option-quote shape
+- joins same-day Trading Foundation `eod/<TICKER>_1D.csv` close data when the raw snapshot file does not carry a usable `underlying_price`
+- emits day-precision `quote_observed_at` metadata when the raw snapshot file lacks one uniform explicit snapshot timestamp
+
 The ad hoc batch manifest path now also resolves `input_path` and `output_path` relative to the manifest file so the same bundle can move between machines without relying on the caller's current working directory.
 
 For SPY expiration-outcome research, the maintained realized-outcome path is now:
@@ -136,9 +162,21 @@ That path is deliberately explicit about:
 - explicit adjustment mode, defaulting to `raw`
 - refusal to forward-fill or silently roll non-trading-day outcome dates
 
+For canonical Trading Foundation EOD inputs, the maintained local-file alternative is:
+
+```powershell
+python -m options_edge_scanner.cli.trading_foundation_realized_underlying_export `
+  --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data `
+  --ticker SPY `
+  --start 2026-06-15 `
+  --end 2026-07-17 `
+  --output outputs/realized_underlying/spy_expiration_day_close_tf.csv
+```
+
 Important boundary:
 
 - the current repo-local Yahoo SPY chain files are useful for expiration inventory, but they are not treated as strict historical snapshot inputs for calibration because their `quote_observed_at` provenance is fetch time rather than a trusted option-quote timestamp
+- the canonical Trading Foundation adapter supports daily historical opportunity-set research today, but if raw snapshot files omit a uniform explicit snapshot timestamp it preserves only day-precision snapshot provenance rather than inventing intraday event-time precision
 
 A collection of local snapshots is still not automatically a valid backtest dataset. The repo does not yet model execution, exits, liquidity, survivorship, or portfolio behavior.
 
@@ -191,8 +229,10 @@ python -m compileall options_edge_scanner run_scanner.py
 python -m options_edge_scanner.cli.offline_scan --input tests/fixtures/sample_option_chain.csv --output outputs/offline_scan_sample.csv --report-output outputs/offline_scan_report.json --as-of 2026-01-02
 python -m options_edge_scanner.cli.offline_batch_scan --manifest tests/fixtures/offline_scan_manifest.csv --summary-output outputs/offline_batch_summary.csv
 python -m options_edge_scanner.cli.historical_snapshot_scan --manifest path/to/strict_historical_manifest.csv --output outputs/historical_snapshot_candidates.csv --summary-output outputs/historical_snapshot_summary.csv
+python -m options_edge_scanner.cli.trading_foundation_snapshot_manifest --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data --ticker SPY --snapshot-date 2025-05-27 --manifest-output outputs/trading_foundation/spy_manifest.csv
 python -m options_edge_scanner.cli.export_probability_predictions --opportunities outputs/offline_scan_sample.csv --output outputs/offline_scan_predictions.csv
 python -m options_edge_scanner.cli.alpaca_realized_underlying_acquire --ticker SPY --start 2026-06-15 --end 2026-07-17 --timeframe 1Day --adjustment raw --feed sip --output outputs/realized_underlying/spy_expiration_day_close_proxy_raw.csv
+python -m options_edge_scanner.cli.trading_foundation_realized_underlying_export --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data --ticker SPY --start 2026-06-15 --end 2026-07-17 --output outputs/realized_underlying/spy_expiration_day_close_tf.csv
 python -m options_edge_scanner.cli.materialize_realized_outcomes --manifest path/to/strict_spy_snapshot_manifest.csv --realized-underlying outputs/realized_underlying/spy_expiration_day_close_proxy_raw.csv --output outputs/realized_outcomes/spy_expiration_outcomes.csv
 python -m options_edge_scanner.cli.probability_calibration_eval --predictions tests/fixtures/sample_probability_predictions.csv --outcomes tests/fixtures/sample_realized_outcomes.csv --summary-output outputs/calibration_summary.csv --bins-output outputs/calibration_bins.csv --observations-output outputs/calibration_observations.csv
 ```

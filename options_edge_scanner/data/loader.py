@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -27,9 +28,15 @@ _SAFE_COLUMN_ALIASES = {
     "expiry_date": "expiration",
     "expiration_date": "expiration",
     "strike_price": "strike",
+    "bid_price": "bid",
+    "ask_price": "ask",
     "iv": "implied_vol",
     "implied_volatility": "implied_vol",
 }
+
+_OCC_OPTION_SYMBOL_PATTERN = re.compile(
+    r"^(?P<ticker>[A-Z0-9]{1,6})(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})(?P<type>[CP])(?P<strike>\d{8})$"
+)
 
 
 def _normalize_columns(columns: Iterable[str]) -> dict[str, str]:
@@ -58,16 +65,93 @@ def _read_local_frame(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported file type: {path.suffix or '<no extension>'}")
 
 
+def _parse_occ_option_symbol(symbol: object) -> dict[str, object] | None:
+    """Parse one OCC-style option symbol into ticker, expiration, strike, and type fields."""
+    if symbol is None:
+        return None
+
+    normalized = str(symbol).strip().upper()
+    if not normalized:
+        return None
+
+    match = _OCC_OPTION_SYMBOL_PATTERN.fullmatch(normalized)
+    if match is None:
+        return None
+
+    strike_code = int(match.group("strike"))
+    expiration = pd.Timestamp(
+        year=2000 + int(match.group("yy")),
+        month=int(match.group("mm")),
+        day=int(match.group("dd")),
+    )
+    return {
+        "ticker": match.group("ticker"),
+        "expiration": expiration,
+        "strike": strike_code / 1000.0,
+        "type": "call" if match.group("type") == "C" else "put",
+    }
+
+
+def _fill_missing_contract_fields_from_option_symbol(
+    option_quotes: pd.DataFrame,
+    *,
+    default_ticker: str | None,
+) -> pd.DataFrame:
+    """Populate canonical contract fields from option_symbol when a raw file omits them."""
+    if "option_symbol" not in option_quotes.columns:
+        return option_quotes
+
+    working = option_quotes.copy()
+    parsed_records = [
+        _parse_occ_option_symbol(value)
+        for value in working["option_symbol"].tolist()
+    ]
+    parsed_frame = pd.DataFrame.from_records(parsed_records)
+    if parsed_frame.empty:
+        return working
+
+    if "ticker" not in working.columns:
+        working["ticker"] = pd.NA
+    if default_ticker is not None:
+        working["ticker"] = working["ticker"].where(working["ticker"].notna(), default_ticker)
+    if "ticker" in parsed_frame.columns:
+        working["ticker"] = working["ticker"].where(
+            working["ticker"].notna(),
+            parsed_frame["ticker"],
+        )
+
+    for column in ("expiration", "strike", "type"):
+        if column not in working.columns:
+            working[column] = pd.NA
+        if column in parsed_frame.columns:
+            working[column] = working[column].where(
+                working[column].notna(),
+                parsed_frame[column],
+            )
+
+    return working
+
+
 def validate_option_quote_frame(
     option_quotes: pd.DataFrame,
     *,
     require_underlying_price: bool = True,
+    default_ticker: str | None = None,
 ) -> pd.DataFrame:
     """Validate and normalize a dataframe against the OptionQuoteRow contract."""
     working = option_quotes.copy()
     renames = _normalize_columns(working.columns)
     if renames:
         working = working.rename(columns=renames)
+    working = _fill_missing_contract_fields_from_option_symbol(
+        working,
+        default_ticker=default_ticker,
+    )
+    if default_ticker is not None:
+        if "ticker" not in working.columns:
+            working["ticker"] = default_ticker
+        else:
+            working["ticker"] = working["ticker"].where(working["ticker"].notna(), default_ticker)
 
     required_columns = [
         column
@@ -106,6 +190,7 @@ def load_option_quotes(
     path: str | Path,
     *,
     require_underlying_price: bool = True,
+    default_ticker: str | None = None,
 ) -> pd.DataFrame:
     """Load contract-compliant option quotes from a local CSV or parquet file."""
     file_path = Path(path)
@@ -113,4 +198,5 @@ def load_option_quotes(
     return validate_option_quote_frame(
         option_quotes,
         require_underlying_price=require_underlying_price,
+        default_ticker=default_ticker,
     )
