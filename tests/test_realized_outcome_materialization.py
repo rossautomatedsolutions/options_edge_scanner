@@ -317,3 +317,57 @@ def test_materialize_realized_outcomes_cli_writes_output(tmp_path: Path) -> None
     assert exit_code == 0
     assert output["expiration"].tolist() == ["2026-06-15"]
     assert output["realized_terminal_underlying_price"].tolist() == [741.25]
+
+
+def test_materialize_realized_outcomes_from_manifest_excludes_future_expirations_as_of_2026_08_23(
+    tmp_path: Path,
+) -> None:
+    chain_past, metadata_past = _write_strict_snapshot(
+        tmp_path,
+        snapshot_id="spy-20260613-185808",
+        expiration="2026-06-15",
+        quote_observed_at="2026-06-13T18:58:08Z",
+        as_of="2026-06-13",
+    )
+    chain_future, metadata_future = _write_strict_snapshot(
+        tmp_path,
+        snapshot_id="spy-20260820-185808",
+        expiration="2027-12-17",
+        quote_observed_at="2026-08-20T18:58:08Z",
+        as_of="2026-08-20",
+    )
+    manifest_path = _write_manifest(
+        tmp_path,
+        [
+            {
+                "snapshot_id": "spy-20260613-185808",
+                "ticker": "SPY",
+                "as_of": "2026-06-13",
+                "chain_path": str(chain_past),
+                "metadata_path": str(metadata_past),
+            },
+            {
+                "snapshot_id": "spy-20260820-185808",
+                "ticker": "SPY",
+                "as_of": "2026-08-20",
+                "chain_path": str(chain_future),
+                "metadata_path": str(metadata_future),
+            },
+        ],
+    )
+    realized_underlying_path = tmp_path / "realized_underlying.csv"
+    write_realized_underlying_frame(
+        pd.DataFrame([_realized_underlying_row(event_date="2026-06-15", observed_price=741.25)]),
+        realized_underlying_path,
+    )
+
+    artifacts = materialize_realized_outcomes_from_snapshot_manifest(
+        manifest_path=manifest_path,
+        realized_underlying_paths=[realized_underlying_path],
+        realized_as_of="2026-08-23T12:00:00Z",
+    )
+
+    assert artifacts.required_observations["expiration"].tolist() == ["2026-06-15", "2027-12-17"]
+    assert artifacts.eligible_required_observations["expiration"].tolist() == ["2026-06-15"]
+    assert artifacts.future_required_observations["expiration"].tolist() == ["2027-12-17"]
+    assert artifacts.outcomes["expiration"].dt.strftime("%Y-%m-%d").tolist() == ["2026-06-15"]

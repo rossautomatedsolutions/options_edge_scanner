@@ -1,5 +1,8 @@
 """Data access layer for market and options datasets."""
 
+from importlib import import_module
+from typing import Any
+
 from .alpaca_historical import (
     AlpacaAcquisitionError,
     AlpacaCredentials,
@@ -31,20 +34,33 @@ from .realized_underlying import (
     validate_realized_underlying_frame,
     write_realized_underlying_frame,
 )
-from .trading_foundation import (
-    TRADING_FOUNDATION_DAY_PRECISION_POLICY,
-    TRADING_FOUNDATION_EOD_DATASET,
-    TRADING_FOUNDATION_EOD_FEED,
-    TRADING_FOUNDATION_EOD_SOURCE,
-    TRADING_FOUNDATION_EOD_TIMEFRAME,
-    TRADING_FOUNDATION_SNAPSHOT_SOURCE,
-    TradingFoundationManifestArtifacts,
-    build_trading_foundation_snapshot_id,
-    list_trading_foundation_snapshot_dates,
-    normalize_trading_foundation_eod_to_realized_underlying,
-    write_trading_foundation_realized_underlying,
-    write_trading_foundation_snapshot_manifest,
-)
+
+
+_TRADING_FOUNDATION_EXPORTS = {
+    "TRADING_FOUNDATION_DAY_PRECISION_POLICY",
+    "TRADING_FOUNDATION_EOD_DATASET",
+    "TRADING_FOUNDATION_EOD_FEED",
+    "TRADING_FOUNDATION_EOD_SOURCE",
+    "TRADING_FOUNDATION_EOD_TIMEFRAME",
+    "TRADING_FOUNDATION_SNAPSHOT_SOURCE",
+    "TradingFoundationManifestArtifacts",
+    "TradingFoundationRealizedOutcomeCoverage",
+    "build_trading_foundation_snapshot_id",
+    "collect_trading_foundation_realized_outcome_coverage",
+    "list_trading_foundation_snapshot_dates",
+    "normalize_trading_foundation_eod_to_realized_underlying",
+    "normalize_trading_foundation_eod_to_realized_underlying_for_manifest",
+    "write_trading_foundation_realized_underlying",
+    "write_trading_foundation_snapshot_manifest",
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy-load Trading Foundation helpers to avoid circular imports."""
+    if name in _TRADING_FOUNDATION_EXPORTS:
+        module = import_module("options_edge_scanner.data.trading_foundation")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "AlpacaAcquisitionError",
@@ -78,10 +94,13 @@ __all__ = [
     "TRADING_FOUNDATION_EOD_TIMEFRAME",
     "TRADING_FOUNDATION_SNAPSHOT_SOURCE",
     "TradingFoundationManifestArtifacts",
+    "TradingFoundationRealizedOutcomeCoverage",
     "build_trading_foundation_snapshot_id",
+    "collect_trading_foundation_realized_outcome_coverage",
     "validate_historical_snapshot_manifest_row",
     "validate_option_quote_frame",
     "validate_realized_underlying_frame",
+    "normalize_trading_foundation_eod_to_realized_underlying_for_manifest",
     "write_trading_foundation_realized_underlying",
     "write_trading_foundation_snapshot_manifest",
     "write_realized_underlying_frame",

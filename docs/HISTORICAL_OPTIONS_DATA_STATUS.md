@@ -113,7 +113,7 @@ The Trading Foundation integration deliberately reuses the repo's existing maint
 - `options_edge_scanner.calibration.materialization.materialize_realized_outcomes_from_snapshot_manifest(...)`
 - `options_edge_scanner.data.realized_underlying` contract validation and CSV writer
 
-## Code Added
+## Code Added / Updated
 
 New adapter capabilities:
 
@@ -126,29 +126,43 @@ Supporting loader upgrade:
 - `load_option_quotes(...)` now understands Trading Foundation `bid_price` / `ask_price` aliases
 - `load_option_quotes(...)` now parses OCC-style `option_symbol` values to recover ticker, expiration, strike, and call/put type when raw files omit explicit normalized columns
 
+Historical-validation hardening added on Sunday, August 23, 2026:
+
+- quote and spread quality filters now reject non-finite Trading Foundation numeric inputs such as missing IV before they can poison otherwise usable snapshots
+- the probability and EV layers now require finite positive spot, strike, IV, and time-to-expiration inputs instead of propagating `NaN` values into `Estimated probability must be finite`
+- realized-underlying export can now derive exact required expiration dates directly from a strict snapshot manifest via `--manifest`
+- realized-outcome materialization now partitions already-realized versus future expirations using `--realized-as-of`, so future-dated contracts after Sunday, August 23, 2026 no longer fail historical calibration materialization
+
 ## Tests Updated
 
 Targeted validation added:
 
 - `tests/test_trading_foundation_integration.py`
+- `tests/test_realized_outcome_materialization.py`
 
 Covered behaviors:
 
 - Trading Foundation price alias mapping plus OCC `option_symbol` parsing
 - strict manifest and metadata generation against raw Trading Foundation snapshot files
 - end-to-end historical scan plus realized-outcome materialization from canonical `option_snapshot/` and `eod/`-shaped fixtures
+- Trading Foundation-shaped snapshots with one non-finite IV contract now skip the bad contract without failing the whole snapshot
+- manifest-driven Trading Foundation realized-underlying export emits only already-realized expiration dates as of Sunday, August 23, 2026
+- realized-outcome materialization excludes future expirations instead of treating them as missing realized-underlying observations
 
 ## Sandbox Validation Result
 
 Validated in the sandbox on Sunday, August 23, 2026:
 
-- `pytest -q tests/test_trading_foundation_integration.py`
-- `python -m compileall options_edge_scanner`
+- `pytest -q tests/test_trading_foundation_integration.py`: `5 passed`
+- `pytest -q tests/test_realized_outcome_materialization.py`: `6 passed`
+- `pytest -q`: `158 passed`
+- `python -m compileall options_edge_scanner run_scanner.py`: passed
 
 Observed sandbox limitation:
 
 - `C:\GitHub\Trading_Foundation\historical_data\SPY` in the sandbox contains `schema_summary.json`, but not populated `option_snapshot/` or `eod/` folders
-- therefore schema integration is validated, but production coverage is still a main-machine question
+- `C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data` does not exist in this environment, so the real May 27, 2025 through May 30, 2025 rerun still has to happen on the actual main machine where the canonical store is mounted
+- therefore schema integration and the code fix are validated locally, but production coverage and the exact May 2025 candidate counts remain a main-machine question
 
 ## Main-Machine Validation Package
 
@@ -174,23 +188,24 @@ python -m options_edge_scanner.cli.historical_snapshot_scan `
   --summary-output outputs\trading_foundation\spy_summary.csv
 ```
 
-3. Export normalized realized-underlying rows from canonical Trading Foundation EOD files.
+3. Export normalized realized-underlying rows from canonical Trading Foundation EOD files using the strict manifest itself as the required-expiration source.
 
 ```powershell
 python -m options_edge_scanner.cli.trading_foundation_realized_underlying_export `
   --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data `
   --ticker SPY `
-  --start 2025-06-20 `
-  --end 2025-07-18 `
-  --output outputs\realized_underlying\spy_expiration_day_close_tf.csv
+  --manifest outputs\trading_foundation\spy_manifest.csv `
+  --realized-as-of 2026-08-23T12:00:00Z `
+  --output outputs\trading_foundation\spy_realized_underlying.csv
 ```
 
-4. Materialize realized outcomes from the strict manifest and normalized underlying artifact.
+4. Materialize realized outcomes from the strict manifest and normalized underlying artifact, excluding future expirations after Sunday, August 23, 2026.
 
 ```powershell
 python -m options_edge_scanner.cli.materialize_realized_outcomes `
   --manifest outputs\trading_foundation\spy_manifest.csv `
-  --realized-underlying outputs\realized_underlying\spy_expiration_day_close_tf.csv `
+  --realized-underlying outputs\trading_foundation\spy_realized_underlying.csv `
+  --realized-as-of 2026-08-23T12:00:00Z `
   --output outputs\trading_foundation\spy_realized_outcomes.csv
 ```
 
@@ -202,7 +217,7 @@ python -m options_edge_scanner.cli.export_probability_predictions `
   --output outputs\trading_foundation\spy_predictions.csv
 ```
 
-6. Evaluate calibration if the selected snapshot window produces prediction/outcome overlap.
+6. Evaluate calibration if the selected snapshot window produces prediction/outcome overlap. Because scanner opportunities can share the same expiration outcome, allow shared outcome keys intentionally.
 
 ```powershell
 python -m options_edge_scanner.cli.probability_calibration_eval `
@@ -210,7 +225,8 @@ python -m options_edge_scanner.cli.probability_calibration_eval `
   --outcomes outputs\trading_foundation\spy_realized_outcomes.csv `
   --summary-output outputs\trading_foundation\spy_calibration_summary.csv `
   --bins-output outputs\trading_foundation\spy_calibration_bins.csv `
-  --observations-output outputs\trading_foundation\spy_calibration_observations.csv
+  --observations-output outputs\trading_foundation\spy_calibration_observations.csv `
+  --allow-shared-outcome-keys
 ```
 
 Expected output files:
@@ -219,7 +235,7 @@ Expected output files:
 - `outputs\trading_foundation\spy_manifest_metadata\*.meta.json`
 - `outputs\trading_foundation\spy_candidates.csv`
 - `outputs\trading_foundation\spy_summary.csv`
-- `outputs\realized_underlying\spy_expiration_day_close_tf.csv`
+- `outputs\trading_foundation\spy_realized_underlying.csv`
 - `outputs\trading_foundation\spy_realized_outcomes.csv`
 - `outputs\trading_foundation\spy_predictions.csv`
 - optional calibration outputs if enough overlap exists
@@ -229,16 +245,20 @@ Main-machine sanity checks:
 - `spy_summary.csv` should show `status=success` for the selected rows
 - `spy_candidates.csv` should carry `snapshot_id`, `quote_observed_at`, `underlying_price_observed_at`, `input_path`, and `source_metadata_path`
 - the manifest metadata sidecars should show `quote_observed_at_policy=file_date_day_precision` only when the raw snapshot file lacks a better uniform timestamp
-- `spy_expiration_day_close_tf.csv` should contain `source=trading_foundation`, `source_dataset=historical_data.eod`, `price_field=close`, and `source_bar_timestamp`
-- `spy_realized_outcomes.csv` should materialize one row per required expiration with no forward-fill warnings or date mismatches
+- `spy_realized_underlying.csv` should contain `source=trading_foundation`, `source_dataset=historical_data.eod`, `price_field=close`, and `source_bar_timestamp`
+- the realized-underlying export should cover exact required historical expiration dates from the manifest rather than a guessed continuous range
+- `spy_realized_outcomes.csv` should print non-zero `future_required_outcome_groups_excluded` whenever the manifest still contains expirations after Sunday, August 23, 2026
+- `spy_realized_outcomes.csv` should materialize only already-realized expiration rows with no forward-fill warnings or date mismatches
 
 Failure signals to watch for:
 
 - missing `option_snapshot` or `eod` file coverage in the selected date range
+- a canonical-root path that does not actually exist on the machine running the commands
 - raw snapshot files that cannot be parsed into expiration/strike/type from `option_symbol`
 - zero successful manifest rows in `spy_summary.csv`
 - empty `spy_candidates.csv` after the scan if the selected snapshots have no spreads that survive current filters
-- `materialize_realized_outcomes` errors about missing `required_outcome_key`
+- `Trading Foundation EOD coverage is missing realized event dates: ...`
+- `materialize_realized_outcomes` errors about missing `required_outcome_key` for dates that should already have occurred
 
 Paste back for review:
 

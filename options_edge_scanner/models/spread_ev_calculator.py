@@ -31,7 +31,12 @@ def _get_numeric_field(spread_row: Mapping[str, Any], *field_names: str) -> floa
     """Extract the first present numeric field from a spread row mapping."""
     for field_name in field_names:
         if field_name in spread_row and spread_row[field_name] is not None:
-            return float(spread_row[field_name])
+            try:
+                value = float(spread_row[field_name])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                return value
 
     expected = ", ".join(field_names)
     raise KeyError(f"Missing required field. Expected one of: {expected}")
@@ -100,7 +105,14 @@ def _resolve_distribution_inputs(spread_row: Mapping[str, Any]) -> dict[str, flo
     except (KeyError, ValueError):
         return None
 
-    if spot <= 0 or implied_vol <= 0 or time_to_expiration <= 0:
+    if (
+        not math.isfinite(spot)
+        or not math.isfinite(implied_vol)
+        or not math.isfinite(time_to_expiration)
+        or spot <= 0
+        or implied_vol <= 0
+        or time_to_expiration <= 0
+    ):
         return None
 
     return {

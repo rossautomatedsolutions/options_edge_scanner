@@ -36,7 +36,12 @@ def _read_float(spread_row: Mapping[str, Any], *candidate_keys: str) -> float:
     """Read the first available numeric value from candidate keys."""
     for key in candidate_keys:
         if key in spread_row and spread_row[key] is not None:
-            return float(spread_row[key])
+            try:
+                value = float(spread_row[key])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                return value
 
     joined_keys = ", ".join(candidate_keys)
     raise KeyError(f"Missing required key; expected one of: {joined_keys}")
@@ -45,7 +50,12 @@ def _read_float(spread_row: Mapping[str, Any], *candidate_keys: str) -> float:
 def _resolve_time_to_expiration(spread_row: Mapping[str, Any]) -> float:
     """Resolve year-fraction time to expiration from row data."""
     if "time_to_expiration" in spread_row and spread_row["time_to_expiration"] is not None:
-        return max(float(spread_row["time_to_expiration"]), _EPSILON)
+        try:
+            time_to_expiration = float(spread_row["time_to_expiration"])
+        except (TypeError, ValueError):
+            time_to_expiration = float("nan")
+        if math.isfinite(time_to_expiration):
+            return max(time_to_expiration, _EPSILON)
 
     days = _read_float(spread_row, "days_to_expiration", "dte")
     return max(days / _TRADING_DAYS_PER_YEAR, _EPSILON)
@@ -99,7 +109,7 @@ def resolve_probability_of_profit_event(spread_row: Mapping[str, Any]) -> Spread
             "bear_call_credit, call_credit, bull_call_debit, bear_put_debit"
         )
 
-    if threshold <= 0:
+    if not math.isfinite(threshold) or threshold <= 0:
         raise ValueError("breakeven must be positive")
 
     return SpreadProbabilityEvent(
@@ -141,12 +151,14 @@ def estimate_probability_of_profit(spread_row: Mapping[str, Any]) -> float:
     time_to_expiration = _resolve_time_to_expiration(spread_row)
     spread_type = str(spread_row.get("spread_type", "")).strip().lower()
 
-    if spot <= 0:
-        raise ValueError("underlying_price must be positive")
-    if lower_strike <= 0 or upper_strike <= 0:
-        raise ValueError("strike values must be positive")
-    if implied_vol <= 0:
-        raise ValueError("implied_volatility must be positive")
+    if not math.isfinite(spot) or spot <= 0:
+        raise ValueError("underlying_price must be finite and positive")
+    if not math.isfinite(lower_strike) or not math.isfinite(upper_strike) or lower_strike <= 0 or upper_strike <= 0:
+        raise ValueError("strike values must be finite and positive")
+    if not math.isfinite(implied_vol) or implied_vol <= 0:
+        raise ValueError("implied_volatility must be finite and positive")
+    if not math.isfinite(time_to_expiration) or time_to_expiration <= 0:
+        raise ValueError("time_to_expiration must be finite and positive")
 
     sigma_t = implied_vol * math.sqrt(time_to_expiration)
     sigma_t = max(sigma_t, _EPSILON)

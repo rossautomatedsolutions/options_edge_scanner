@@ -16,6 +16,11 @@ from options_edge_scanner.calibration.contracts import (
     format_date_like,
     format_utc_timestamp,
 )
+from options_edge_scanner.calibration.materialization import (
+    REQUIRED_OUTCOME_REQUEST_COLUMNS,
+    collect_required_outcome_requests_from_manifest,
+    partition_required_outcome_requests_by_realization,
+)
 from options_edge_scanner.calibration.terminal_semantics import (
     market_close_timestamp_for_event_date,
     resolve_terminal_observation_policy,
@@ -59,6 +64,16 @@ class TradingFoundationManifestArtifacts:
     snapshot_dates: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class TradingFoundationRealizedOutcomeCoverage:
+    """Manifest-derived realized versus future expiration coverage for Trading Foundation exports."""
+
+    required_observations: pd.DataFrame
+    eligible_required_observations: pd.DataFrame
+    future_required_observations: pd.DataFrame
+    realized_as_of: pd.Timestamp
+
+
 def _normalize_date(value: object, *, label: str) -> pd.Timestamp:
     """Parse one date-like value into a normalized timestamp."""
     parsed = pd.to_datetime(value, errors="coerce")
@@ -73,6 +88,11 @@ def _normalize_timestamp(value: object) -> pd.Timestamp | None:
     if pd.isna(parsed):
         return None
     return pd.Timestamp(parsed).tz_localize(None)
+
+
+def _normalize_event_dates(event_dates: Sequence[object]) -> list[pd.Timestamp]:
+    """Normalize one explicit set of required event dates."""
+    return sorted({_normalize_date(value, label="event_date") for value in event_dates})
 
 
 def _stringify_path_for_manifest(path: Path, *, manifest_dir: Path) -> str:
@@ -392,42 +412,82 @@ def write_trading_foundation_snapshot_manifest(
     )
 
 
+def collect_trading_foundation_realized_outcome_coverage(
+    manifest_path: str | Path,
+    *,
+    realized_as_of: object | None = None,
+) -> TradingFoundationRealizedOutcomeCoverage:
+    """Collect manifest-derived realized-versus-future expiration coverage for calibration."""
+    required_observations = collect_required_outcome_requests_from_manifest(manifest_path)
+    partition = partition_required_outcome_requests_by_realization(
+        required_observations,
+        realized_as_of=realized_as_of,
+    )
+    return TradingFoundationRealizedOutcomeCoverage(
+        required_observations=required_observations,
+        eligible_required_observations=partition.eligible_required_observations,
+        future_required_observations=partition.future_required_observations,
+        realized_as_of=partition.realized_as_of,
+    )
+
+
 def normalize_trading_foundation_eod_to_realized_underlying(
     historical_data_root: str | Path,
     *,
     ticker: str,
-    start_date: object,
-    end_date: object,
+    start_date: object | None = None,
+    end_date: object | None = None,
+    event_dates: Sequence[object] | None = None,
     required_outcome_horizon: str = "expiration",
     adjustment_mode: str = "unknown",
     acquired_at: object | None = None,
 ) -> pd.DataFrame:
     """Normalize Trading Foundation EOD bars into RealizedUnderlyingObservationRow records."""
     normalized_ticker = str(ticker).strip().upper()
-    lower_bound = _normalize_date(start_date, label="start_date")
-    upper_bound = _normalize_date(end_date, label="end_date")
-    if lower_bound > upper_bound:
-        raise ValueError("start_date must be on or before end_date.")
+    normalized_event_dates = _normalize_event_dates(event_dates or [])
+    if normalized_event_dates:
+        lower_bound = normalized_event_dates[0]
+        upper_bound = normalized_event_dates[-1]
+    else:
+        if start_date is None or end_date is None:
+            raise ValueError("Provide start_date/end_date or one or more explicit event_dates.")
+        lower_bound = _normalize_date(start_date, label="start_date")
+        upper_bound = _normalize_date(end_date, label="end_date")
+        if lower_bound > upper_bound:
+            raise ValueError("start_date must be on or before end_date.")
 
     policy = resolve_terminal_observation_policy(
         ticker=normalized_ticker,
         required_outcome_horizon=required_outcome_horizon,
     )
     eod_frame = _load_eod_frame(historical_data_root, ticker=normalized_ticker)
-    bounded = eod_frame.loc[
-        eod_frame["session_date"].between(lower_bound, upper_bound)
-    ].copy()
+    if normalized_event_dates:
+        bounded = eod_frame.loc[eod_frame["session_date"].isin(normalized_event_dates)].copy()
+    else:
+        bounded = eod_frame.loc[
+            eod_frame["session_date"].between(lower_bound, upper_bound)
+        ].copy()
     if bounded.empty:
         raise ValueError(
             "Trading Foundation EOD coverage is empty for "
             f"ticker={normalized_ticker}, start={format_date_like(lower_bound)}, "
             f"end={format_date_like(upper_bound)}."
         )
+    if normalized_event_dates:
+        requested_dates = {format_date_like(value) for value in normalized_event_dates}
+        available_dates = set(bounded["session_date"].map(format_date_like).tolist())
+        missing_dates = sorted(requested_dates.difference(available_dates))
+        if missing_dates:
+            joined = ", ".join(missing_dates)
+            raise ValueError(
+                "Trading Foundation EOD coverage is missing realized event dates: "
+                f"{joined}"
+            )
 
     acquired_timestamp = (
         format_utc_timestamp(acquired_at)
         if acquired_at is not None
-        else format_utc_timestamp(pd.Timestamp.utcnow())
+        else format_utc_timestamp(pd.Timestamp.now(tz="UTC"))
     )
     artifact_id = build_realized_underlying_artifact_id(
         source=TRADING_FOUNDATION_EOD_SOURCE,
@@ -495,26 +555,81 @@ def normalize_trading_foundation_eod_to_realized_underlying(
     return validate_realized_underlying_frame(pd.DataFrame.from_records(records))
 
 
+def normalize_trading_foundation_eod_to_realized_underlying_for_manifest(
+    historical_data_root: str | Path,
+    *,
+    ticker: str,
+    manifest_path: str | Path,
+    realized_as_of: object | None = None,
+    required_outcome_horizon: str = "expiration",
+    adjustment_mode: str = "unknown",
+    acquired_at: object | None = None,
+) -> tuple[pd.DataFrame, TradingFoundationRealizedOutcomeCoverage]:
+    """Normalize only already-realized manifest-required event dates into realized-underlying rows."""
+    coverage = collect_trading_foundation_realized_outcome_coverage(
+        manifest_path,
+        realized_as_of=realized_as_of,
+    )
+    if coverage.eligible_required_observations.empty:
+        raise ValueError(
+            "The manifest contains no already-realized required expiration outcomes as of "
+            f"{format_utc_timestamp(coverage.realized_as_of)}."
+        )
+
+    manifest_tickers = (
+        coverage.eligible_required_observations["ticker"].dropna().astype("string").str.strip().str.upper().unique().tolist()
+    )
+    normalized_ticker = str(ticker).strip().upper()
+    if manifest_tickers and (len(manifest_tickers) != 1 or manifest_tickers[0] != normalized_ticker):
+        raise ValueError(
+            "Manifest-required outcome ticker coverage does not match the requested Trading Foundation export "
+            f"ticker. manifest_tickers={manifest_tickers}, requested_ticker={normalized_ticker}"
+        )
+
+    observations = normalize_trading_foundation_eod_to_realized_underlying(
+        historical_data_root,
+        ticker=normalized_ticker,
+        event_dates=coverage.eligible_required_observations["expiration"].tolist(),
+        required_outcome_horizon=required_outcome_horizon,
+        adjustment_mode=adjustment_mode,
+        acquired_at=acquired_at,
+    )
+    return observations, coverage
+
+
 def write_trading_foundation_realized_underlying(
     historical_data_root: str | Path,
     *,
     ticker: str,
-    start_date: object,
-    end_date: object,
+    start_date: object | None = None,
+    end_date: object | None = None,
     output_path: str | Path,
+    manifest_path: str | Path | None = None,
+    realized_as_of: object | None = None,
     required_outcome_horizon: str = "expiration",
     adjustment_mode: str = "unknown",
     acquired_at: object | None = None,
 ) -> pd.DataFrame:
     """Normalize and persist Trading Foundation EOD bars into one realized-underlying artifact."""
-    observations = normalize_trading_foundation_eod_to_realized_underlying(
-        historical_data_root,
-        ticker=ticker,
-        start_date=start_date,
-        end_date=end_date,
-        required_outcome_horizon=required_outcome_horizon,
-        adjustment_mode=adjustment_mode,
-        acquired_at=acquired_at,
-    )
+    if manifest_path is not None:
+        observations, _coverage = normalize_trading_foundation_eod_to_realized_underlying_for_manifest(
+            historical_data_root,
+            ticker=ticker,
+            manifest_path=manifest_path,
+            realized_as_of=realized_as_of,
+            required_outcome_horizon=required_outcome_horizon,
+            adjustment_mode=adjustment_mode,
+            acquired_at=acquired_at,
+        )
+    else:
+        observations = normalize_trading_foundation_eod_to_realized_underlying(
+            historical_data_root,
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            required_outcome_horizon=required_outcome_horizon,
+            adjustment_mode=adjustment_mode,
+            acquired_at=acquired_at,
+        )
     write_realized_underlying_frame(observations, output_path)
     return observations

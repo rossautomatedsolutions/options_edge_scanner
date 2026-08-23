@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -39,6 +40,14 @@ def _find_column(columns: Iterable[str], candidates: list[str]) -> str | None:
     return None
 
 
+def _finite_numeric(series: pd.Series) -> pd.Series:
+    """Parse one numeric series and keep only finite values."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    return numeric.where(
+        numeric.notna() & numeric.map(lambda value: math.isfinite(float(value)) if pd.notna(value) else False)
+    )
+
+
 def apply_option_quote_quality_filters(
     option_quotes: pd.DataFrame,
     *,
@@ -62,10 +71,16 @@ def apply_option_quote_quality_filters(
         and strike_col is not None
         and underlying_col is not None
     ):
-        strikes = pd.to_numeric(working[strike_col], errors="coerce")
-        spots = pd.to_numeric(working[underlying_col], errors="coerce")
+        strikes = _finite_numeric(working[strike_col])
+        spots = _finite_numeric(working[underlying_col])
         moneyness_distance = (strikes - spots).abs() / spots
         keep_mask &= (spots > 0) & moneyness_distance.le(settings.max_abs_moneyness_pct)
+    elif strike_col is not None:
+        strikes = _finite_numeric(working[strike_col])
+        keep_mask &= strikes.gt(0)
+    elif underlying_col is not None:
+        spots = _finite_numeric(working[underlying_col])
+        keep_mask &= spots.gt(0)
 
     bid_col = _find_column(working.columns, ["bid"])
     ask_col = _find_column(working.columns, ["ask"])
@@ -75,10 +90,10 @@ def apply_option_quote_quality_filters(
         and bid_col is not None
         and ask_col is not None
     ):
-        bids = pd.to_numeric(working[bid_col], errors="coerce")
-        asks = pd.to_numeric(working[ask_col], errors="coerce")
+        bids = _finite_numeric(working[bid_col])
+        asks = _finite_numeric(working[ask_col])
         mids = (
-            pd.to_numeric(working[mid_col], errors="coerce")
+            _finite_numeric(working[mid_col])
             if mid_col is not None
             else (bids + asks) / 2.0
         )
@@ -90,6 +105,13 @@ def apply_option_quote_quality_filters(
             & mids.gt(0)
             & relative_spread.le(settings.max_bid_ask_spread_pct)
         )
+    else:
+        if bid_col is not None:
+            bids = _finite_numeric(working[bid_col])
+            keep_mask &= bids.ge(0)
+        if ask_col is not None:
+            asks = _finite_numeric(working[ask_col])
+            keep_mask &= asks.ge(0)
 
     volume_col = _find_column(working.columns, ["volume"])
     if settings.min_volume is not None and volume_col is not None:
@@ -111,6 +133,11 @@ def apply_option_quote_quality_filters(
         if settings.max_abs_delta is not None:
             keep_mask &= abs_delta.le(settings.max_abs_delta)
 
+    implied_vol_col = _find_column(working.columns, ["implied_vol", "implied_volatility", "iv"])
+    if implied_vol_col is not None:
+        implied_vol = _finite_numeric(working[implied_vol_col])
+        keep_mask &= implied_vol.gt(0)
+
     return working.loc[keep_mask].reset_index(drop=True)
 
 
@@ -126,9 +153,9 @@ def apply_spread_quality_filters(
     working = spreads.copy()
     keep_mask = pd.Series(True, index=working.index)
 
-    debit = pd.to_numeric(working.get("debit"), errors="coerce")
-    width = pd.to_numeric(working.get("width"), errors="coerce")
-    max_profit = pd.to_numeric(working.get("max_profit"), errors="coerce")
+    debit = _finite_numeric(working.get("debit"))
+    width = _finite_numeric(working.get("width"))
+    max_profit = _finite_numeric(working.get("max_profit"))
     keep_mask &= debit.gt(0) & width.gt(0) & debit.lt(width) & max_profit.gt(0)
 
     if settings.max_debit_fraction_of_width is not None:
@@ -143,7 +170,8 @@ def apply_spread_quality_filters(
             working.get("quoted_debit", working.get("debit")),
             errors="coerce",
         )
-        spread_market_width = pd.to_numeric(working["spread_market_width"], errors="coerce")
+        quoted_debit = _finite_numeric(quoted_debit)
+        spread_market_width = _finite_numeric(working["spread_market_width"])
         relative_market_width = spread_market_width / quoted_debit
         keep_mask &= quoted_debit.gt(0) & spread_market_width.ge(0)
         keep_mask &= relative_market_width.le(settings.max_spread_market_width_pct)
@@ -151,5 +179,12 @@ def apply_spread_quality_filters(
     if settings.min_liquidity_score is not None and "liquidity_score" in working.columns:
         liquidity_score = pd.to_numeric(working["liquidity_score"], errors="coerce")
         keep_mask &= liquidity_score.ge(settings.min_liquidity_score)
+
+    if "underlying_price" in working.columns:
+        underlying_price = _finite_numeric(working["underlying_price"])
+        keep_mask &= underlying_price.gt(0)
+    if "implied_volatility" in working.columns:
+        implied_volatility = _finite_numeric(working["implied_volatility"])
+        keep_mask &= implied_volatility.gt(0)
 
     return working.loc[keep_mask].reset_index(drop=True)

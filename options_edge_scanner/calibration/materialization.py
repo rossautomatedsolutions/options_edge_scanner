@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -41,12 +41,89 @@ REQUIRED_OUTCOME_REQUEST_COLUMNS = (
 )
 
 
+def _current_utc_timestamp() -> pd.Timestamp:
+    """Return one timezone-naive UTC timestamp for internal cutoff bookkeeping."""
+    return pd.Timestamp.now(tz="UTC").tz_localize(None)
+
+
+@dataclass(frozen=True)
+class RequiredOutcomeRequestPartition:
+    """Partition required outcomes into already-realized versus future-dated requests."""
+
+    realized_as_of: pd.Timestamp
+    eligible_required_observations: pd.DataFrame
+    future_required_observations: pd.DataFrame
+
+
 @dataclass(frozen=True)
 class MaterializedRealizedOutcomeArtifacts:
     """Machine-readable outcome materialization outputs."""
 
     required_observations: pd.DataFrame
     outcomes: pd.DataFrame
+    eligible_required_observations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    future_required_observations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    realized_as_of: pd.Timestamp = field(default_factory=_current_utc_timestamp)
+
+
+def _normalize_realized_as_of(realized_as_of: object | None) -> pd.Timestamp:
+    """Resolve one timestamp used to determine whether an expiration outcome is already realized."""
+    if realized_as_of is None:
+        return _current_utc_timestamp()
+
+    parsed = pd.to_datetime(realized_as_of, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        raise ValueError(f"realized_as_of must be a valid timestamp or date-like value. Received: {realized_as_of}")
+    return pd.Timestamp(parsed).tz_localize(None)
+
+
+def partition_required_outcome_requests_by_realization(
+    required_observations: pd.DataFrame,
+    *,
+    realized_as_of: object | None = None,
+) -> RequiredOutcomeRequestPartition:
+    """Split required outcome rows into already-realized and still-future partitions."""
+    if required_observations.empty:
+        return RequiredOutcomeRequestPartition(
+            realized_as_of=_normalize_realized_as_of(realized_as_of),
+            eligible_required_observations=pd.DataFrame(columns=list(REQUIRED_OUTCOME_REQUEST_COLUMNS)),
+            future_required_observations=pd.DataFrame(columns=list(REQUIRED_OUTCOME_REQUEST_COLUMNS)),
+        )
+
+    missing_required_columns = [
+        column for column in REQUIRED_OUTCOME_REQUEST_COLUMNS if column not in required_observations.columns
+    ]
+    if missing_required_columns:
+        missing = ", ".join(missing_required_columns)
+        raise ValueError(f"required_observations is missing columns: {missing}")
+
+    realized_as_of_ts = _normalize_realized_as_of(realized_as_of)
+    eligible_mask: list[bool] = []
+    for row in required_observations.to_dict("records"):
+        policy = resolve_terminal_observation_policy(
+            ticker=row["ticker"],
+            required_outcome_horizon=row["required_outcome_horizon"],
+        )
+        expected_market_close = market_close_timestamp_for_event_date(
+            row["expiration"],
+            policy=policy,
+        )
+        market_close_ts = pd.to_datetime(expected_market_close, errors="coerce", utc=True)
+        if pd.isna(market_close_ts):
+            raise ValueError(
+                "Unable to resolve market-close timestamp for required_outcome_key="
+                f"{row['required_outcome_key']}."
+            )
+        eligible_mask.append(pd.Timestamp(market_close_ts).tz_localize(None) <= realized_as_of_ts)
+
+    eligibility = pd.Series(eligible_mask, index=required_observations.index, dtype=bool)
+    eligible = required_observations.loc[eligibility].reset_index(drop=True)
+    future = required_observations.loc[~eligibility].reset_index(drop=True)
+    return RequiredOutcomeRequestPartition(
+        realized_as_of=realized_as_of_ts,
+        eligible_required_observations=eligible,
+        future_required_observations=future,
+    )
 
 
 def collect_required_outcome_requests_from_manifest(
@@ -246,17 +323,28 @@ def materialize_realized_outcomes_from_snapshot_manifest(
     *,
     manifest_path: str | Path,
     realized_underlying_paths: list[str | Path],
+    realized_as_of: object | None = None,
 ) -> MaterializedRealizedOutcomeArtifacts:
     """Materialize contract-valid realized outcomes from strict snapshots plus normalized bars."""
     required_observations = collect_required_outcome_requests_from_manifest(manifest_path)
-    realized_underlying = load_realized_underlying_artifacts(realized_underlying_paths)
-    outcomes = materialize_realized_outcomes(
-        required_observations=required_observations,
-        realized_underlying=realized_underlying,
+    partition = partition_required_outcome_requests_by_realization(
+        required_observations,
+        realized_as_of=realized_as_of,
     )
+    realized_underlying = load_realized_underlying_artifacts(realized_underlying_paths)
+    if partition.eligible_required_observations.empty:
+        outcomes = pd.DataFrame(columns=list(OUTCOME_REQUIRED_COLUMNS))
+    else:
+        outcomes = materialize_realized_outcomes(
+            required_observations=partition.eligible_required_observations,
+            realized_underlying=realized_underlying,
+        )
     return MaterializedRealizedOutcomeArtifacts(
         required_observations=required_observations,
+        eligible_required_observations=partition.eligible_required_observations,
+        future_required_observations=partition.future_required_observations,
         outcomes=outcomes,
+        realized_as_of=partition.realized_as_of,
     )
 
 

@@ -17,14 +17,21 @@ def run_realized_outcome_materialization(
     manifest_path: str | Path,
     realized_underlying_paths: list[str | Path],
     output_path: str | Path,
-) -> tuple[int, int]:
+    realized_as_of: object | None = None,
+) -> tuple[int, int, int, int]:
     """Materialize realized outcomes and persist one CSV artifact."""
     artifacts = materialize_realized_outcomes_from_snapshot_manifest(
         manifest_path=manifest_path,
         realized_underlying_paths=realized_underlying_paths,
+        realized_as_of=realized_as_of,
     )
     write_realized_outcomes(artifacts.outcomes, output_path)
-    return len(artifacts.required_observations), len(artifacts.outcomes)
+    return (
+        len(artifacts.required_observations),
+        len(artifacts.eligible_required_observations),
+        len(artifacts.future_required_observations),
+        len(artifacts.outcomes),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Normalized realized underlying CSV path; repeat for multiple artifacts",
     )
+    parser.add_argument(
+        "--realized-as-of",
+        default=None,
+        help=(
+            "Optional timestamp or date used to determine which expiration outcomes have already "
+            "occurred. Future-dated required outcomes after this point are excluded from materialization."
+        ),
+    )
     parser.add_argument("--output", required=True, help="RealizedOutcomeRow CSV output path")
     return parser
 
@@ -50,14 +65,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse arguments, materialize realized outcomes, and print one concise summary."""
     args = build_parser().parse_args(argv)
-    required_count, output_count = run_realized_outcome_materialization(
+    required_count, eligible_count, future_count, output_count = run_realized_outcome_materialization(
         manifest_path=args.manifest,
         realized_underlying_paths=args.realized_underlying_paths,
         output_path=args.output,
+        realized_as_of=args.realized_as_of,
     )
     print(
         "Realized outcome materialization complete. "
         f"required_outcome_groups={required_count}, "
+        f"eligible_required_outcome_groups={eligible_count}, "
+        f"future_required_outcome_groups_excluded={future_count}, "
         f"materialized_outcomes={output_count}"
     )
     return 0

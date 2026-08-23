@@ -131,6 +131,7 @@ That adapter path:
 - parses `option_symbol` plus Trading Foundation `bid_price`/`ask_price` fields into the repo's canonical option-quote shape
 - joins same-day Trading Foundation `eod/<TICKER>_1D.csv` close data when the raw snapshot file does not carry a usable `underlying_price`
 - emits day-precision `quote_observed_at` metadata when the raw snapshot file lacks one uniform explicit snapshot timestamp
+- rejects non-finite quote inputs such as missing IV before they can invalidate an otherwise usable historical snapshot
 
 The ad hoc batch manifest path now also resolves `input_path` and `output_path` relative to the manifest file so the same bundle can move between machines without relying on the caller's current working directory.
 
@@ -168,9 +169,25 @@ For canonical Trading Foundation EOD inputs, the maintained local-file alternati
 python -m options_edge_scanner.cli.trading_foundation_realized_underlying_export `
   --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data `
   --ticker SPY `
-  --start 2026-06-15 `
-  --end 2026-07-17 `
-  --output outputs/realized_underlying/spy_expiration_day_close_tf.csv
+  --manifest outputs/trading_foundation/spy_manifest.csv `
+  --realized-as-of 2026-08-23T12:00:00Z `
+  --output outputs/trading_foundation/spy_realized_underlying.csv
+```
+
+That manifest-aware path:
+
+- derives the exact required expiration-close dates from the strict snapshot manifest instead of guessing a continuous date range
+- exports only already-realized expiration observations as of the explicit cutoff timestamp
+- preserves strict exact ticker/date matching and still fails if a historical realized date that should exist is missing from canonical EOD coverage
+
+Then materialize only already-realized outcomes:
+
+```powershell
+python -m options_edge_scanner.cli.materialize_realized_outcomes `
+  --manifest outputs/trading_foundation/spy_manifest.csv `
+  --realized-underlying outputs/trading_foundation/spy_realized_underlying.csv `
+  --realized-as-of 2026-08-23T12:00:00Z `
+  --output outputs/trading_foundation/spy_realized_outcomes.csv
 ```
 
 Important boundary:
@@ -232,9 +249,9 @@ python -m options_edge_scanner.cli.historical_snapshot_scan --manifest path/to/s
 python -m options_edge_scanner.cli.trading_foundation_snapshot_manifest --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data --ticker SPY --snapshot-date 2025-05-27 --manifest-output outputs/trading_foundation/spy_manifest.csv
 python -m options_edge_scanner.cli.export_probability_predictions --opportunities outputs/offline_scan_sample.csv --output outputs/offline_scan_predictions.csv
 python -m options_edge_scanner.cli.alpaca_realized_underlying_acquire --ticker SPY --start 2026-06-15 --end 2026-07-17 --timeframe 1Day --adjustment raw --feed sip --output outputs/realized_underlying/spy_expiration_day_close_proxy_raw.csv
-python -m options_edge_scanner.cli.trading_foundation_realized_underlying_export --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data --ticker SPY --start 2026-06-15 --end 2026-07-17 --output outputs/realized_underlying/spy_expiration_day_close_tf.csv
-python -m options_edge_scanner.cli.materialize_realized_outcomes --manifest path/to/strict_spy_snapshot_manifest.csv --realized-underlying outputs/realized_underlying/spy_expiration_day_close_proxy_raw.csv --output outputs/realized_outcomes/spy_expiration_outcomes.csv
-python -m options_edge_scanner.cli.probability_calibration_eval --predictions tests/fixtures/sample_probability_predictions.csv --outcomes tests/fixtures/sample_realized_outcomes.csv --summary-output outputs/calibration_summary.csv --bins-output outputs/calibration_bins.csv --observations-output outputs/calibration_observations.csv
+python -m options_edge_scanner.cli.trading_foundation_realized_underlying_export --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data --ticker SPY --manifest outputs/trading_foundation/spy_manifest.csv --realized-as-of 2026-08-23T12:00:00Z --output outputs/trading_foundation/spy_realized_underlying.csv
+python -m options_edge_scanner.cli.materialize_realized_outcomes --manifest path/to/strict_spy_snapshot_manifest.csv --realized-underlying outputs/trading_foundation/spy_realized_underlying.csv --realized-as-of 2026-08-23T12:00:00Z --output outputs/realized_outcomes/spy_expiration_outcomes.csv
+python -m options_edge_scanner.cli.probability_calibration_eval --predictions tests/fixtures/sample_probability_predictions.csv --outcomes tests/fixtures/sample_realized_outcomes.csv --summary-output outputs/calibration_summary.csv --bins-output outputs/calibration_bins.csv --observations-output outputs/calibration_observations.csv --allow-shared-outcome-keys
 ```
 
 The scanner and tests are offline.

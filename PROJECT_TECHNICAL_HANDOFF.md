@@ -1,13 +1,13 @@
 # Project Technical Handoff
 
-Last validated: 2026-08-17
+Last validated: 2026-08-23
 Repository: `C:\GitHub\options_edge_scanner`
 Validation basis:
 
 - core package inspection across `options_edge_scanner/`, `docs/`, `tests/`, `notebooks/`, and selected `outputs/`
-- recent git history through `c01de06 Fix Yahoo snapshot provenance propagation`
-- `pytest -q` on 2026-08-17: `152 passed in 25.93s`
-- `python -m compileall options_edge_scanner run_scanner.py` on 2026-08-17: passed
+- recent git history through the current 2026-08-23 Trading Foundation validation hardening changes
+- `pytest -q` on 2026-08-23: `158 passed in 19.12s`
+- `python -m compileall options_edge_scanner run_scanner.py` on 2026-08-23: passed
 - practical artifact checks on 2026-08-17:
   - calibration export from `outputs/historical_snapshots/spy_candidates.csv` succeeded with 40 exported predictions
   - calibration export from `outputs/offline_scan_sample.csv` failed because the artifact is missing current calibration-export columns and `snapshot_id`
@@ -19,8 +19,10 @@ This addendum updates the historical-options data assessment without changing th
 
 Targeted validation on Sunday, August 23, 2026:
 
-- `pytest -q tests/test_trading_foundation_integration.py`: `3 passed in 2.09s`
-- `python -m compileall options_edge_scanner`: passed
+- `pytest -q tests/test_trading_foundation_integration.py`: `5 passed`
+- `pytest -q tests/test_realized_outcome_materialization.py`: `6 passed`
+- `pytest -q`: `158 passed`
+- `python -m compileall options_edge_scanner run_scanner.py`: passed
 
 New capability added on Sunday, August 23, 2026:
 
@@ -28,10 +30,15 @@ New capability added on Sunday, August 23, 2026:
 - new CLI `python -m options_edge_scanner.cli.trading_foundation_snapshot_manifest` writes manifest rows plus metadata sidecars that point at those raw snapshot files
 - new CLI `python -m options_edge_scanner.cli.trading_foundation_realized_underlying_export` normalizes canonical Trading Foundation `eod/<TICKER>_1D.csv` files into the repo's `RealizedUnderlyingObservationRow` contract
 - `options_edge_scanner.data.loader.load_option_quotes(...)` now parses OCC-style `option_symbol` values and Trading Foundation `bid_price` / `ask_price` aliases so the raw snapshot schema can map into the repo's canonical option-quote contract
+- scanner quote and spread filters now reject non-finite Trading Foundation inputs such as missing IV, spot, strike, or quote values before they reach probability/EV estimation
+- the probability and EV layers now require finite positive spot, strike, IV, and time-to-expiration inputs so malformed contracts are rejected explicitly instead of surfacing later as `Estimated probability must be finite`
+- manifest-derived Trading Foundation realized-underlying export now supports `--manifest` and `--realized-as-of`, so the workflow can export exact already-realized expiration dates instead of guessing a continuous range
+- realized-outcome materialization now partitions required expirations into eligible versus future sets and excludes future expirations after the explicit cutoff instead of failing because their outcomes do not exist yet
 
 Current limitation after the adapter build:
 
 - the sandbox copy of `C:\GitHub\Trading_Foundation\historical_data\SPY` does not contain populated `option_snapshot/` or `eod/` folders, so real main-machine date coverage still needs an explicit audit
+- the canonical main-machine root from the validation task, `C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data`, is not mounted in this environment, so the exact May 27, 2025 through May 30, 2025 rerun could not be repeated here after the code fix
 - the inspected sandbox Trading Foundation schema summary shows no guaranteed uniform snapshot-level timestamp column in `option_snapshot/`; when a raw file lacks one, the adapter emits day-precision `quote_observed_at` metadata derived from the file date rather than inventing intraday event-time precision
 - SPY expiration-close outcome semantics remain the only explicit realized-outcome policy supported by this repo
 
