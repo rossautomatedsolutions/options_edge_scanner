@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 import pandas as pd
 
 from options_edge_scanner.calibration import (
-    materialize_realized_outcomes_from_snapshot_manifest,
+    OUTCOME_REQUIRED_COLUMNS,
+    format_utc_timestamp,
+    materialize_realized_outcomes,
     write_realized_outcomes,
 )
 from options_edge_scanner.cli.historical_snapshot_scan import run_historical_snapshot_scan
+from options_edge_scanner.data.realized_underlying import (
+    REALIZED_UNDERLYING_REQUIRED_COLUMNS,
+    write_realized_underlying_frame,
+)
 from options_edge_scanner.data.trading_foundation import (
-    write_trading_foundation_realized_underlying,
+    audit_trading_foundation_eod_coverage,
+    collect_trading_foundation_realized_outcome_coverage,
+    normalize_trading_foundation_eod_to_realized_underlying,
     write_trading_foundation_snapshot_manifest,
 )
 from options_edge_scanner.effectiveness import evaluate_scanner_effectiveness
@@ -33,6 +42,152 @@ def _write_text(text: str, path: str | Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(text, encoding="utf-8")
     return output_path
+
+
+def _empty_frame(columns: Sequence[str]) -> pd.DataFrame:
+    return pd.DataFrame(columns=list(columns))
+
+
+@dataclass(frozen=True)
+class HistoricalEffectivenessOutcomeCoverageArtifacts:
+    required_observations: pd.DataFrame
+    eligible_required_observations: pd.DataFrame
+    future_required_observations: pd.DataFrame
+    available_required_observations: pd.DataFrame
+    missing_required_observations: pd.DataFrame
+    realized_underlying: pd.DataFrame
+    outcomes: pd.DataFrame
+    eod_coverage_audit: pd.DataFrame
+    exclusion_details: pd.DataFrame
+
+
+def _collect_partial_realized_outcome_artifacts(
+    *,
+    historical_data_root: str | Path,
+    ticker: str,
+    manifest_path: str | Path,
+    realized_as_of: str,
+) -> HistoricalEffectivenessOutcomeCoverageArtifacts:
+    coverage = collect_trading_foundation_realized_outcome_coverage(
+        manifest_path,
+        realized_as_of=realized_as_of,
+    )
+    eligible_required_observations = coverage.eligible_required_observations.reset_index(drop=True)
+    future_required_observations = coverage.future_required_observations.reset_index(drop=True)
+    eod_coverage_audit = audit_trading_foundation_eod_coverage(
+        historical_data_root,
+        ticker=ticker,
+        event_dates=eligible_required_observations["expiration"].tolist(),
+    ).audit_rows.reset_index(drop=True)
+
+    if eligible_required_observations.empty:
+        available_required_observations = eligible_required_observations.copy()
+        missing_required_observations = eligible_required_observations.copy()
+    else:
+        audit_by_date = eod_coverage_audit.set_index("event_date", drop=False)
+        available_dates = set(
+            audit_by_date.loc[audit_by_date["status"] == "available", "event_date"].tolist()
+        )
+        missing_dates = set(
+            audit_by_date.loc[audit_by_date["status"] == "missing", "event_date"].tolist()
+        )
+        available_required_observations = eligible_required_observations.loc[
+            eligible_required_observations["expiration"].isin(available_dates)
+        ].reset_index(drop=True)
+        missing_required_observations = eligible_required_observations.loc[
+            eligible_required_observations["expiration"].isin(missing_dates)
+        ].reset_index(drop=True)
+
+    if available_required_observations.empty:
+        realized_underlying = _empty_frame(REALIZED_UNDERLYING_REQUIRED_COLUMNS)
+        outcomes = _empty_frame(OUTCOME_REQUIRED_COLUMNS)
+    else:
+        realized_underlying = normalize_trading_foundation_eod_to_realized_underlying(
+            historical_data_root,
+            ticker=ticker,
+            event_dates=available_required_observations["expiration"].tolist(),
+        )
+        outcomes = materialize_realized_outcomes(
+            required_observations=available_required_observations,
+            realized_underlying=realized_underlying,
+        )
+
+    exclusion_frames: list[pd.DataFrame] = []
+    if not missing_required_observations.empty:
+        exclusion_frames.append(
+            missing_required_observations.merge(
+                eod_coverage_audit.rename(columns={"event_date": "required_event_date"}),
+                left_on="expiration",
+                right_on="required_event_date",
+                how="left",
+                validate="many_to_one",
+            ).assign(
+                exclusion_reason="missing_realized_underlying",
+                exclusion_detail="Canonical Trading Foundation realized EOD observation is unavailable for this required event date.",
+            )[
+                [
+                    "required_outcome_key",
+                    "exclusion_reason",
+                    "exclusion_detail",
+                    "required_event_date",
+                    "issue_classification",
+                    "previous_available_event_date",
+                    "next_available_event_date",
+                ]
+            ]
+        )
+    if not future_required_observations.empty:
+        exclusion_frames.append(
+            future_required_observations.assign(
+                exclusion_reason="realized_outcome_not_yet_available_as_of_cutoff",
+                exclusion_detail=(
+                    "Required event date occurs after the explicit realized_as_of cutoff "
+                    f"({format_utc_timestamp(realized_as_of)})."
+                ),
+                required_event_date=future_required_observations["expiration"],
+                issue_classification=pd.NA,
+                previous_available_event_date=pd.NA,
+                next_available_event_date=pd.NA,
+            )[
+                [
+                    "required_outcome_key",
+                    "exclusion_reason",
+                    "exclusion_detail",
+                    "required_event_date",
+                    "issue_classification",
+                    "previous_available_event_date",
+                    "next_available_event_date",
+                ]
+            ]
+        )
+
+    exclusion_details = (
+        pd.concat(exclusion_frames, ignore_index=True)
+        if exclusion_frames
+        else pd.DataFrame(
+            columns=[
+                "required_outcome_key",
+                "exclusion_reason",
+                "exclusion_detail",
+                "required_event_date",
+                "issue_classification",
+                "previous_available_event_date",
+                "next_available_event_date",
+            ]
+        )
+    )
+
+    return HistoricalEffectivenessOutcomeCoverageArtifacts(
+        required_observations=coverage.required_observations.reset_index(drop=True),
+        eligible_required_observations=eligible_required_observations,
+        future_required_observations=future_required_observations,
+        available_required_observations=available_required_observations,
+        missing_required_observations=missing_required_observations,
+        realized_underlying=realized_underlying.reset_index(drop=True),
+        outcomes=outcomes.reset_index(drop=True),
+        eod_coverage_audit=eod_coverage_audit,
+        exclusion_details=exclusion_details.reset_index(drop=True),
+    )
 
 
 def _build_quality_settings(args: argparse.Namespace) -> OfflineScanQualitySettings:
@@ -100,6 +255,8 @@ def _prepend_run_context(
     scan_summary: pd.DataFrame,
     required_outcome_count: int,
     eligible_required_outcome_count: int,
+    available_required_outcome_count: int,
+    missing_required_outcome_count: int,
     future_required_outcome_count: int,
 ) -> str:
     requested_snapshot_count = int(len(scan_summary))
@@ -120,6 +277,8 @@ def _prepend_run_context(
         f"- snapshot rows failed: {failed_snapshot_count}",
         f"- required expiration outcome groups from manifest: {required_outcome_count}",
         f"- eligible realized outcome groups at cutoff: {eligible_required_outcome_count}",
+        f"- eligible realized outcome groups with canonical EOD coverage: {available_required_outcome_count}",
+        f"- eligible realized outcome groups missing canonical EOD coverage: {missing_required_outcome_count}",
         f"- future outcome groups excluded at cutoff: {future_required_outcome_count}",
         "",
     ]
@@ -163,10 +322,13 @@ def run_historical_effectiveness_evaluation(
     calibration_observations_path = output_root / "calibration_observations.csv"
     effectiveness_summary_path = output_root / "effectiveness_summary.csv"
     effectiveness_observations_path = output_root / "effectiveness_observations.csv"
+    effectiveness_exclusions_path = output_root / "effectiveness_exclusions.csv"
+    effectiveness_exclusion_summary_path = output_root / "effectiveness_exclusion_summary.csv"
     metric_buckets_path = output_root / "effectiveness_metric_buckets.csv"
     segment_summary_path = output_root / "effectiveness_segment_summary.csv"
     execution_sensitivity_path = output_root / "effectiveness_execution_sensitivity.csv"
     tail_concentration_path = output_root / "effectiveness_tail_concentration.csv"
+    realized_outcome_coverage_audit_path = output_root / "realized_outcome_coverage_audit.csv"
     report_path = output_root / "historical_effectiveness_report.md"
 
     candidates, scan_summary = run_historical_snapshot_scan(
@@ -181,19 +343,13 @@ def run_historical_effectiveness_evaluation(
             "running effectiveness analysis."
         )
 
-    write_trading_foundation_realized_underlying(
-        historical_data_root,
+    outcome_artifacts = _collect_partial_realized_outcome_artifacts(
+        historical_data_root=historical_data_root,
         ticker=ticker,
         manifest_path=resolved_manifest_path,
         realized_as_of=realized_as_of,
-        output_path=realized_underlying_path,
     )
-
-    outcome_artifacts = materialize_realized_outcomes_from_snapshot_manifest(
-        manifest_path=resolved_manifest_path,
-        realized_underlying_paths=[realized_underlying_path],
-        realized_as_of=realized_as_of,
-    )
+    write_realized_underlying_frame(outcome_artifacts.realized_underlying, realized_underlying_path)
     write_realized_outcomes(outcome_artifacts.outcomes, realized_outcomes_path)
 
     effectiveness = evaluate_scanner_effectiveness(
@@ -202,6 +358,7 @@ def run_historical_effectiveness_evaluation(
         metric_columns=metric_columns,
         bucket_count=bucket_count,
         drop_missing_outcomes=True,
+        exclusion_details=outcome_artifacts.exclusion_details,
         allow_shared_outcome_keys=True,
     )
 
@@ -211,6 +368,12 @@ def run_historical_effectiveness_evaluation(
     )
     summary_with_context["eligible_required_outcome_group_count"] = int(
         len(outcome_artifacts.eligible_required_observations)
+    )
+    summary_with_context["available_required_outcome_group_count"] = int(
+        len(outcome_artifacts.available_required_observations)
+    )
+    summary_with_context["missing_required_outcome_group_count"] = int(
+        len(outcome_artifacts.missing_required_observations)
     )
     summary_with_context["future_required_outcome_group_count"] = int(
         len(outcome_artifacts.future_required_observations)
@@ -229,6 +392,8 @@ def run_historical_effectiveness_evaluation(
         scan_summary=scan_summary,
         required_outcome_count=len(outcome_artifacts.required_observations),
         eligible_required_outcome_count=len(outcome_artifacts.eligible_required_observations),
+        available_required_outcome_count=len(outcome_artifacts.available_required_observations),
+        missing_required_outcome_count=len(outcome_artifacts.missing_required_observations),
         future_required_outcome_count=len(outcome_artifacts.future_required_observations),
     )
 
@@ -238,10 +403,13 @@ def run_historical_effectiveness_evaluation(
     _write_csv(effectiveness.calibration_observations, calibration_observations_path)
     _write_csv(summary_with_context, effectiveness_summary_path)
     _write_csv(effectiveness.observations, effectiveness_observations_path)
+    _write_csv(effectiveness.exclusions, effectiveness_exclusions_path)
+    _write_csv(effectiveness.exclusion_summary, effectiveness_exclusion_summary_path)
     _write_csv(effectiveness.metric_buckets, metric_buckets_path)
     _write_csv(effectiveness.segment_summary, segment_summary_path)
     _write_csv(effectiveness.execution_sensitivity, execution_sensitivity_path)
     _write_csv(effectiveness.tail_concentration, tail_concentration_path)
+    _write_csv(outcome_artifacts.eod_coverage_audit, realized_outcome_coverage_audit_path)
     _write_text(report_markdown, report_path)
 
     return {
@@ -256,10 +424,13 @@ def run_historical_effectiveness_evaluation(
         "calibration_observations": calibration_observations_path,
         "effectiveness_summary": effectiveness_summary_path,
         "effectiveness_observations": effectiveness_observations_path,
+        "effectiveness_exclusions": effectiveness_exclusions_path,
+        "effectiveness_exclusion_summary": effectiveness_exclusion_summary_path,
         "metric_buckets": metric_buckets_path,
         "segment_summary": segment_summary_path,
         "execution_sensitivity": execution_sensitivity_path,
         "tail_concentration": tail_concentration_path,
+        "realized_outcome_coverage_audit": realized_outcome_coverage_audit_path,
         "report": report_path,
     }
 

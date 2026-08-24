@@ -14,6 +14,11 @@ from options_edge_scanner.calibration import (
     export_scanner_probability_predictions,
     validate_realized_outcome_frame,
 )
+from options_edge_scanner.calibration.contracts import (
+    CALIBRATION_SUMMARY_COLUMNS,
+    EVALUATION_OBSERVATION_COLUMNS as CALIBRATION_EVALUATION_OBSERVATION_COLUMNS,
+    RELIABILITY_BIN_COLUMNS,
+)
 from options_edge_scanner.models.spread_ev_calculator import TRANSACTION_COST
 
 
@@ -183,6 +188,50 @@ EFFECTIVENESS_OBSERVATION_COLUMNS = (
     "prediction_quarter",
 )
 
+EFFECTIVENESS_EXCLUSION_COLUMNS = (
+    "prediction_id",
+    "snapshot_id",
+    "snapshot_source",
+    "ticker",
+    "prediction_timestamp",
+    "quote_observed_at",
+    "as_of",
+    "expiration",
+    "spread_type",
+    "option_type",
+    "lower_strike",
+    "upper_strike",
+    "long_strike",
+    "short_strike",
+    "width",
+    "days_to_expiration",
+    "selection_rank",
+    "expected_value",
+    "probability_of_profit",
+    "ranking_score",
+    "required_outcome_key",
+    "observation_group_id",
+    "input_path",
+    "source_metadata_path",
+    "evaluation_status",
+    "exclusion_reason",
+    "exclusion_detail",
+    "required_event_date",
+    "issue_classification",
+    "previous_available_event_date",
+    "next_available_event_date",
+)
+
+EFFECTIVENESS_EXCLUSION_SUMMARY_COLUMNS = (
+    "exclusion_reason",
+    "required_event_date",
+    "excluded_opportunity_count",
+    "excluded_required_outcome_key_count",
+    "snapshot_count",
+    "affected_spread_type_count",
+    "affected_spread_types",
+)
+
 GROUP_SUMMARY_COLUMNS = (
     "observation_count",
     "outcome_cluster_count",
@@ -264,10 +313,18 @@ TAIL_CONCENTRATION_COLUMNS = (
 EFFECTIVENESS_SUMMARY_COLUMNS = (
     "input_opportunity_count",
     "evaluated_opportunity_count",
+    "excluded_opportunity_count",
+    "evaluation_coverage_rate",
+    "excluded_opportunity_rate",
     "excluded_missing_outcome_count",
+    "excluded_missing_realized_underlying_count",
+    "excluded_future_outcome_count",
+    "missing_realized_event_date_count",
+    "missing_realized_event_dates",
     "available_outcome_count",
     "evaluated_outcome_count",
     "shared_outcome_key_count",
+    "evaluation_status",
     "mean_predicted_probability",
     "observed_event_rate",
     "observed_event_rate_ci_lower",
@@ -312,6 +369,15 @@ _DEFAULT_SEGMENT_COLUMNS = (
     "prediction_quarter",
 )
 _Z_95 = 1.959963984540054
+_EXCLUSION_DETAIL_COLUMNS = (
+    "required_outcome_key",
+    "exclusion_reason",
+    "exclusion_detail",
+    "required_event_date",
+    "issue_classification",
+    "previous_available_event_date",
+    "next_available_event_date",
+)
 
 
 @dataclass(frozen=True)
@@ -323,6 +389,8 @@ class EffectivenessEvaluationArtifacts:
     calibration_bins: pd.DataFrame
     calibration_observations: pd.DataFrame
     observations: pd.DataFrame
+    exclusions: pd.DataFrame
+    exclusion_summary: pd.DataFrame
     summary: pd.DataFrame
     metric_buckets: pd.DataFrame
     segment_summary: pd.DataFrame
@@ -361,6 +429,159 @@ def _parse_date_series(series: pd.Series, *, column: str) -> pd.Series:
     if parsed.isna().any():
         raise ValueError(f"{column} must contain valid date-like values.")
     return parsed.dt.tz_localize(None).dt.normalize()
+
+
+def _empty_calibration_outputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return (
+        pd.DataFrame(columns=list(CALIBRATION_SUMMARY_COLUMNS)),
+        pd.DataFrame(columns=list(RELIABILITY_BIN_COLUMNS)),
+        pd.DataFrame(columns=list(CALIBRATION_EVALUATION_OBSERVATION_COLUMNS)),
+    )
+
+
+def _normalize_exclusion_details(exclusion_details: pd.DataFrame | None) -> pd.DataFrame:
+    if exclusion_details is None or exclusion_details.empty:
+        return pd.DataFrame(columns=list(_EXCLUSION_DETAIL_COLUMNS))
+
+    missing_columns = [
+        column for column in ("required_outcome_key", "exclusion_reason")
+        if column not in exclusion_details.columns
+    ]
+    if missing_columns:
+        missing = ", ".join(missing_columns)
+        raise ValueError(f"exclusion_details is missing columns: {missing}")
+
+    working = exclusion_details.copy().reset_index(drop=True)
+    working["required_outcome_key"] = _non_empty_string_series(
+        working["required_outcome_key"],
+        column="required_outcome_key",
+    )
+    working["exclusion_reason"] = _non_empty_string_series(
+        working["exclusion_reason"],
+        column="exclusion_reason",
+    )
+    if "required_event_date" in working.columns:
+        present_mask = working["required_event_date"].notna()
+        parsed_required_event_date = pd.Series(pd.NaT, index=working.index, dtype="datetime64[ns]")
+        if present_mask.any():
+            parsed_required_event_date.loc[present_mask] = _parse_date_series(
+                working.loc[present_mask, "required_event_date"],
+                column="required_event_date",
+            ).values
+        working = working.drop(columns=["required_event_date"])
+        working["required_event_date"] = parsed_required_event_date
+    else:
+        working["required_event_date"] = pd.NaT
+
+    for column in (
+        "exclusion_detail",
+        "issue_classification",
+        "previous_available_event_date",
+        "next_available_event_date",
+    ):
+        if column in working.columns:
+            working[column] = working[column].astype("string").str.strip()
+        else:
+            working[column] = pd.NA
+
+    if working["required_outcome_key"].duplicated().any():
+        raise ValueError("exclusion_details.required_outcome_key values must be unique.")
+
+    return working.loc[:, list(_EXCLUSION_DETAIL_COLUMNS)].reset_index(drop=True)
+
+
+def _build_exclusion_frame(
+    excluded_rows: pd.DataFrame,
+    *,
+    exclusion_details: pd.DataFrame,
+) -> pd.DataFrame:
+    if excluded_rows.empty:
+        return pd.DataFrame(columns=list(EFFECTIVENESS_EXCLUSION_COLUMNS))
+
+    working = excluded_rows.copy()
+    if not exclusion_details.empty:
+        working = working.merge(
+            exclusion_details,
+            on="required_outcome_key",
+            how="left",
+            validate="many_to_one",
+        )
+    else:
+        for column in _EXCLUSION_DETAIL_COLUMNS:
+            if column == "required_outcome_key":
+                continue
+            working[column] = pd.NA
+
+    working["evaluation_status"] = "excluded"
+    working["exclusion_reason"] = (
+        working["exclusion_reason"]
+        .astype("string")
+        .fillna("missing_realized_outcome")
+    )
+    working["exclusion_detail"] = (
+        working["exclusion_detail"]
+        .astype("string")
+        .fillna("No matching realized outcome was available from the supplied outcome set.")
+    )
+    working["required_event_date"] = working["required_event_date"].where(
+        working["required_event_date"].notna(),
+        working["expiration"],
+    )
+    for column in EFFECTIVENESS_EXCLUSION_COLUMNS:
+        if column not in working.columns:
+            working[column] = pd.NA
+
+    return (
+        working.sort_values(
+            by=["prediction_timestamp", "prediction_id"],
+            kind="stable",
+        )
+        .loc[:, list(EFFECTIVENESS_EXCLUSION_COLUMNS)]
+        .reset_index(drop=True)
+    )
+
+
+def _build_exclusion_summary(exclusions: pd.DataFrame) -> pd.DataFrame:
+    if exclusions.empty:
+        return pd.DataFrame(columns=list(EFFECTIVENESS_EXCLUSION_SUMMARY_COLUMNS))
+
+    working = exclusions.copy()
+    working["required_event_date"] = pd.to_datetime(
+        working["required_event_date"],
+        errors="coerce",
+        utc=True,
+    ).dt.tz_localize(None).dt.normalize()
+
+    records: list[dict[str, Any]] = []
+    grouped = working.groupby(["exclusion_reason", "required_event_date"], dropna=False, sort=True)
+    for (exclusion_reason, required_event_date), rows in grouped:
+        spread_types = sorted(
+            {
+                str(value).strip()
+                for value in rows["spread_type"].dropna().astype("string").tolist()
+                if str(value).strip()
+            }
+        )
+        records.append(
+            {
+                "exclusion_reason": str(exclusion_reason),
+                "required_event_date": (
+                    pd.Timestamp(required_event_date).strftime("%Y-%m-%d")
+                    if pd.notna(required_event_date)
+                    else "unknown"
+                ),
+                "excluded_opportunity_count": int(len(rows)),
+                "excluded_required_outcome_key_count": int(rows["required_outcome_key"].nunique()),
+                "snapshot_count": int(rows["snapshot_id"].nunique()),
+                "affected_spread_type_count": int(len(spread_types)),
+                "affected_spread_types": ",".join(spread_types),
+            }
+        )
+
+    return pd.DataFrame.from_records(
+        records,
+        columns=list(EFFECTIVENESS_EXCLUSION_SUMMARY_COLUMNS),
+    )
 
 
 def validate_effectiveness_opportunity_frame(opportunities: pd.DataFrame) -> pd.DataFrame:
@@ -854,6 +1075,8 @@ def _top_bottom_differences(
 
 def build_effectiveness_report(
     summary: pd.DataFrame,
+    exclusions: pd.DataFrame,
+    exclusion_summary: pd.DataFrame,
     metric_buckets: pd.DataFrame,
     calibration_summary: pd.DataFrame,
     execution_sensitivity: pd.DataFrame,
@@ -879,18 +1102,32 @@ def build_effectiveness_report(
     tail_row = tail_concentration.loc[
         tail_concentration["metric_name"] == "realized_pnl_executable"
     ]
+    excluded_count = int(summary_row["excluded_opportunity_count"])
+    missing_date_rows = exclusion_summary.loc[
+        exclusion_summary["exclusion_reason"] == "missing_realized_underlying"
+    ].copy()
+    future_rows = exclusion_summary.loc[
+        exclusion_summary["exclusion_reason"] == "realized_outcome_not_yet_available_as_of_cutoff"
+    ].copy()
 
     lines = [
         "# Historical Effectiveness Report",
         "",
         "## Overall",
         (
-            f"- evaluated opportunities: {int(summary_row['evaluated_opportunity_count'])} "
-            f"of {int(summary_row['input_opportunity_count'])}"
+            f"- historical opportunities generated: {int(summary_row['input_opportunity_count'])}"
+        ),
+        (
+            f"- evaluable opportunities: {int(summary_row['evaluated_opportunity_count'])}; "
+            f"excluded opportunities: {excluded_count}; "
+            f"evaluation coverage: {summary_row['evaluation_coverage_rate']:.4f}"
         ),
         (
             f"- realized outcome groups: {int(summary_row['evaluated_outcome_count'])} "
             f"(shared outcome keys: {int(summary_row['shared_outcome_key_count'])})"
+        ),
+        (
+            f"- evaluation status: {summary_row['evaluation_status']}"
         ),
         (
             f"- mean expected value: {summary_row['mean_expected_value']:.4f}; "
@@ -912,9 +1149,73 @@ def build_effectiveness_report(
             f"Spearman vs realized PnL={summary_row['ranking_score_spearman_realized_pnl']:.4f}"
         ),
         "",
-        "## Buckets",
+        "## Exclusions",
     ]
 
+    if exclusions.empty:
+        lines.append("- no opportunities were excluded for missing realized outcomes")
+    else:
+        lines.append(
+            (
+                f"- excluded opportunities: {excluded_count} "
+                f"({summary_row['excluded_opportunity_rate']:.4f} of generated opportunities)"
+            )
+        )
+        if float(summary_row["evaluation_coverage_rate"]) < 0.95:
+            lines.append(
+                "- WARNING: material sample loss from unavailable realized outcomes; interpret effectiveness metrics cautiously."
+            )
+        if summary_row["missing_realized_event_dates"]:
+            lines.append(
+                f"- exact missing realized dates: {summary_row['missing_realized_event_dates']}"
+            )
+        if not missing_date_rows.empty:
+            for row in missing_date_rows.to_dict("records"):
+                lines.append(
+                    (
+                        f"- missing realized underlying on {row['required_event_date']}: "
+                        f"{int(row['excluded_opportunity_count'])} excluded opportunities "
+                        f"(spread types: {row['affected_spread_types'] or 'unknown'})"
+                    )
+                )
+        if not future_rows.empty:
+            for row in future_rows.to_dict("records"):
+                lines.append(
+                    (
+                        f"- outcome not yet realized as of cutoff for {row['required_event_date']}: "
+                        f"{int(row['excluded_opportunity_count'])} excluded opportunities"
+                    )
+                )
+
+    if int(summary_row["evaluated_opportunity_count"]) == 0:
+        lines.extend(["", "## Buckets"])
+        lines.append("- no evaluable opportunities had realized outcomes; bucket analysis was not computed")
+        lines.extend(["", "## Calibration", "- no evaluable opportunities had realized outcomes; calibration was not computed"])
+        lines.extend(
+            [
+                "",
+                "## Execution Sensitivity",
+                "- no evaluable opportunities had realized outcomes; execution sensitivity was not computed",
+                "",
+                "## Tail Concentration",
+                "- no evaluable opportunities had realized outcomes; tail concentration was not computed",
+                "",
+                "## Limitations",
+                "- The study measures hold-to-expiration economics only; it is not a lifecycle option backtest.",
+                "- Entry economics use the repo's existing quoted-mid, executable-debit, and displayed-ask references rather than historical fill records.",
+                "- Probability calibration and realized PnL are evaluated only where separate realized outcomes exist after the chosen cutoff.",
+                "- Shared expiration outcome keys create cross-candidate dependence, so bucket and overall confidence intervals are cluster-based by outcome key and still remain research approximations.",
+                "- The current explicit terminal outcome policy in this repo remains bounded to SPY expiration-close semantics unless additional policies are added later.",
+            ]
+        )
+        return "\n".join(lines) + "\n"
+
+    lines.extend(
+        [
+            "",
+            "## Buckets",
+        ]
+    )
     if not ranking_rows.empty:
         top_row = ranking_rows.sort_values("bucket_index", kind="stable").iloc[0]
         bottom_row = ranking_rows.sort_values("bucket_index", kind="stable").iloc[-1]
@@ -1020,6 +1321,7 @@ def evaluate_scanner_effectiveness(
     bucket_count: int = 10,
     segment_columns: Sequence[str] | None = None,
     drop_missing_outcomes: bool = False,
+    exclusion_details: pd.DataFrame | None = None,
     allow_shared_outcome_keys: bool = True,
 ) -> EffectivenessEvaluationArtifacts:
     """Evaluate scanner rankings, EV, and probabilities against realized outcomes."""
@@ -1049,151 +1351,279 @@ def evaluate_scanner_effectiveness(
         errors="coerce",
     ).values
 
+    normalized_exclusion_details = _normalize_exclusion_details(exclusion_details)
+    available_outcome_keys = set(validated_outcomes["required_outcome_key"].astype("string").tolist())
+    keep_mask = working["required_outcome_key"].astype("string").isin(available_outcome_keys)
+    exclusions = _build_exclusion_frame(
+        working.loc[~keep_mask].reset_index(drop=True),
+        exclusion_details=normalized_exclusion_details,
+    )
+    exclusion_summary = _build_exclusion_summary(exclusions)
+
+    if not drop_missing_outcomes and not exclusions.empty:
+        raise ValueError(f"Missing realized outcomes for {int(len(exclusions))} opportunity rows.")
+
     if drop_missing_outcomes:
-        available_outcome_keys = set(validated_outcomes["required_outcome_key"].astype("string").tolist())
-        keep_mask = working["required_outcome_key"].astype("string").isin(available_outcome_keys)
-        excluded_missing_outcome_count = int((~keep_mask).sum())
         working = working.loc[keep_mask].reset_index(drop=True)
         predictions = predictions.loc[keep_mask].reset_index(drop=True)
+
+    if working.empty:
+        calibration_summary, calibration_bins, calibration_observations = _empty_calibration_outputs()
+        observations = pd.DataFrame(columns=list(EFFECTIVENESS_OBSERVATION_COLUMNS))
+        metric_buckets = pd.DataFrame(columns=list(METRIC_BUCKET_COLUMNS))
+        segment_summary = pd.DataFrame(columns=list(SEGMENT_SUMMARY_COLUMNS))
+        execution_sensitivity = pd.DataFrame(columns=list(EXECUTION_SENSITIVITY_COLUMNS))
+        tail_concentration = pd.DataFrame(columns=list(TAIL_CONCENTRATION_COLUMNS))
+        calibration_summary_row = None
+        overall_summary = {
+            "mean_predicted_probability": float("nan"),
+            "observed_event_rate": float("nan"),
+            "observed_event_rate_ci_lower": float("nan"),
+            "observed_event_rate_ci_upper": float("nan"),
+            "realized_profit_rate_executable": float("nan"),
+            "realized_profit_rate_ci_lower": float("nan"),
+            "realized_profit_rate_ci_upper": float("nan"),
+            "mean_expected_value": float("nan"),
+            "mean_realized_pnl_executable": float("nan"),
+            "mean_realized_pnl_executable_ci_lower": float("nan"),
+            "mean_realized_pnl_executable_ci_upper": float("nan"),
+            "mean_realized_pnl_quoted": float("nan"),
+            "total_expected_value": 0.0,
+            "total_realized_pnl_executable": 0.0,
+            "total_realized_pnl_quoted": 0.0,
+        }
+        ranking_top_bottom_pnl = float("nan")
+        ranking_top_bottom_profit = float("nan")
+        ev_top_bottom_pnl = float("nan")
+        ev_top_bottom_profit = float("nan")
     else:
-        excluded_missing_outcome_count = 0
-
-    calibration_artifacts = evaluate_probability_predictions(
-        predictions,
-        validated_outcomes,
-        allow_shared_outcome_keys=allow_shared_outcome_keys,
-    )
-
-    observations = working.merge(
-        validated_outcomes,
-        on="required_outcome_key",
-        how="left",
-        suffixes=("", "_outcome"),
-        validate="many_to_one",
-    )
-    if observations["outcome_id"].isna().any():
-        missing_count = int(observations["outcome_id"].isna().sum())
-        raise ValueError(f"Missing realized outcomes for {missing_count} opportunity rows.")
-    if not observations["ticker"].eq(observations["ticker_outcome"]).all():
-        raise ValueError("Scanner opportunity / realized outcome ticker mismatch detected.")
-    if not observations["expiration"].eq(observations["expiration_outcome"]).all():
-        raise ValueError("Scanner opportunity / realized outcome expiration mismatch detected.")
-    if not observations["realized_outcome_observed_at"].gt(observations["prediction_timestamp"]).all():
-        raise ValueError("realized_outcome_observed_at must be strictly later than prediction_timestamp.")
-
-    observations["realized_event"] = observations.apply(_compute_realized_event, axis=1).astype(int)
-    observations["spread_expiration_value"] = observations.apply(_compute_expiration_value, axis=1).astype(float)
-    observations["realized_pnl_quoted_gross"] = (
-        observations["spread_expiration_value"] - observations["quoted_debit"]
-    ).astype(float)
-    observations["realized_pnl_quoted"] = (
-        observations["realized_pnl_quoted_gross"] - TRANSACTION_COST
-    ).astype(float)
-    observations["realized_pnl_executable_gross"] = (
-        observations["spread_expiration_value"] - observations["debit"]
-    ).astype(float)
-    observations["realized_pnl_executable"] = (
-        observations["realized_pnl_executable_gross"] - TRANSACTION_COST
-    ).astype(float)
-    observations["realized_pnl_ask_gross"] = (
-        observations["spread_expiration_value"] - observations["spread_ask"]
-    ).astype(float)
-    observations["realized_pnl_ask"] = (
-        observations["realized_pnl_ask_gross"] - TRANSACTION_COST
-    ).astype(float)
-    observations["realized_positive_pnl_quoted"] = observations["realized_pnl_quoted"].gt(0).astype(int)
-    observations["realized_positive_pnl_executable"] = observations["realized_pnl_executable"].gt(0).astype(int)
-    observations["realized_positive_pnl_ask"] = observations["realized_pnl_ask"].gt(0).fillna(False).astype(int)
-    observations["realized_return_on_risk_executable"] = (
-        observations["realized_pnl_executable"] / observations["max_loss"]
-    ).astype(float)
-    observations["expected_minus_realized_pnl_executable"] = (
-        observations["expected_value"] - observations["realized_pnl_executable"]
-    ).astype(float)
-    observations["breakeven_moneyness_pct"] = (
-        (observations["predicted_event_threshold"] - observations["underlying_price"]).abs()
-        / observations["underlying_price"]
-    ).astype(float)
-    observations["spread_market_width_pct"] = (
-        observations["spread_market_width"] / observations["quoted_debit"]
-    ).astype(float)
-    observations["dte_bucket"] = _fixed_bucket_labels(
-        observations["days_to_expiration"],
-        bins=[-float("inf"), 7.0, 14.0, 30.0, 60.0, float("inf")],
-        labels=["<=7", "8-14", "15-30", "31-60", ">60"],
-    )
-    observations["breakeven_moneyness_bucket"] = _fixed_bucket_labels(
-        observations["breakeven_moneyness_pct"],
-        bins=[-float("inf"), 0.02, 0.05, 0.10, float("inf")],
-        labels=["<=2%", "2-5%", "5-10%", ">10%"],
-    )
-    observations["liquidity_bucket"] = _fixed_bucket_labels(
-        observations["liquidity_score"],
-        bins=[-float("inf"), 0.25, 0.50, 0.75, float("inf")],
-        labels=["<=0.25", "0.25-0.50", "0.50-0.75", ">0.75"],
-    )
-    observations["spread_width_bucket"] = _fixed_bucket_labels(
-        observations["spread_market_width_pct"],
-        bins=[-float("inf"), 0.10, 0.25, 0.50, float("inf")],
-        labels=["<=10%", "10-25%", "25-50%", ">50%"],
-    )
-    observations["volatility_regime_bucket"] = _fixed_bucket_labels(
-        observations["implied_volatility"],
-        bins=[-float("inf"), 0.15, 0.25, 0.40, float("inf")],
-        labels=["<=15%", "15-25%", "25-40%", ">40%"],
-    )
-    observations["prediction_quarter"] = observations["prediction_timestamp"].map(_prediction_quarter_label)
-
-    metric_names = tuple(metric_columns or _DEFAULT_METRIC_COLUMNS)
-    for metric_name in metric_names:
-        if metric_name not in observations.columns:
-            raise ValueError(f"Requested metric column is unavailable for effectiveness study: {metric_name}")
-
-    metric_bucket_frames = [
-        _build_metric_bucket_summary(
-            observations,
-            metric_name=metric_name,
-            bucket_count=bucket_count,
+        calibration_artifacts = evaluate_probability_predictions(
+            predictions,
+            validated_outcomes,
+            allow_shared_outcome_keys=allow_shared_outcome_keys,
         )
-        for metric_name in metric_names
-    ]
-    metric_buckets = (
-        pd.concat(metric_bucket_frames, ignore_index=True)
-        if metric_bucket_frames
-        else pd.DataFrame(columns=list(METRIC_BUCKET_COLUMNS))
-    )
+        calibration_summary = calibration_artifacts.summary.reset_index(drop=True)
+        calibration_bins = calibration_artifacts.reliability_bins.reset_index(drop=True)
+        calibration_observations = calibration_artifacts.observations.reset_index(drop=True)
 
-    segment_summary = _build_segment_summary(
-        observations,
-        segment_columns=tuple(segment_columns or _DEFAULT_SEGMENT_COLUMNS),
-    )
-    execution_sensitivity = _build_execution_sensitivity(observations)
-    tail_concentration = _build_tail_concentration(observations)
+        observations = working.merge(
+            validated_outcomes,
+            on="required_outcome_key",
+            how="left",
+            suffixes=("", "_outcome"),
+            validate="many_to_one",
+        )
+        if observations["outcome_id"].isna().any():
+            missing_count = int(observations["outcome_id"].isna().sum())
+            raise ValueError(f"Missing realized outcomes for {missing_count} opportunity rows.")
+        if not observations["ticker"].eq(observations["ticker_outcome"]).all():
+            raise ValueError("Scanner opportunity / realized outcome ticker mismatch detected.")
+        if not observations["expiration"].eq(observations["expiration_outcome"]).all():
+            raise ValueError("Scanner opportunity / realized outcome expiration mismatch detected.")
+        if not observations["realized_outcome_observed_at"].gt(observations["prediction_timestamp"]).all():
+            raise ValueError("realized_outcome_observed_at must be strictly later than prediction_timestamp.")
 
-    overall_summary = _summarize_group(observations)
-    ranking_top_bottom_pnl, ranking_top_bottom_profit = _top_bottom_differences(
-        metric_buckets,
-        metric_name="ranking_score",
-    )
-    ev_top_bottom_pnl, ev_top_bottom_profit = _top_bottom_differences(
-        metric_buckets,
-        metric_name="expected_value",
-    )
-    calibration_summary_row = (
-        calibration_artifacts.summary.iloc[0] if not calibration_artifacts.summary.empty else None
-    )
+        observations["realized_event"] = observations.apply(_compute_realized_event, axis=1).astype(int)
+        observations["spread_expiration_value"] = observations.apply(_compute_expiration_value, axis=1).astype(float)
+        observations["realized_pnl_quoted_gross"] = (
+            observations["spread_expiration_value"] - observations["quoted_debit"]
+        ).astype(float)
+        observations["realized_pnl_quoted"] = (
+            observations["realized_pnl_quoted_gross"] - TRANSACTION_COST
+        ).astype(float)
+        observations["realized_pnl_executable_gross"] = (
+            observations["spread_expiration_value"] - observations["debit"]
+        ).astype(float)
+        observations["realized_pnl_executable"] = (
+            observations["realized_pnl_executable_gross"] - TRANSACTION_COST
+        ).astype(float)
+        observations["realized_pnl_ask_gross"] = (
+            observations["spread_expiration_value"] - observations["spread_ask"]
+        ).astype(float)
+        observations["realized_pnl_ask"] = (
+            observations["realized_pnl_ask_gross"] - TRANSACTION_COST
+        ).astype(float)
+        observations["realized_positive_pnl_quoted"] = observations["realized_pnl_quoted"].gt(0).astype(int)
+        observations["realized_positive_pnl_executable"] = observations["realized_pnl_executable"].gt(0).astype(int)
+        observations["realized_positive_pnl_ask"] = observations["realized_pnl_ask"].gt(0).fillna(False).astype(int)
+        observations["realized_return_on_risk_executable"] = (
+            observations["realized_pnl_executable"] / observations["max_loss"]
+        ).astype(float)
+        observations["expected_minus_realized_pnl_executable"] = (
+            observations["expected_value"] - observations["realized_pnl_executable"]
+        ).astype(float)
+        observations["breakeven_moneyness_pct"] = (
+            (observations["predicted_event_threshold"] - observations["underlying_price"]).abs()
+            / observations["underlying_price"]
+        ).astype(float)
+        observations["spread_market_width_pct"] = (
+            observations["spread_market_width"] / observations["quoted_debit"]
+        ).astype(float)
+        observations["dte_bucket"] = _fixed_bucket_labels(
+            observations["days_to_expiration"],
+            bins=[-float("inf"), 7.0, 14.0, 30.0, 60.0, float("inf")],
+            labels=["<=7", "8-14", "15-30", "31-60", ">60"],
+        )
+        observations["breakeven_moneyness_bucket"] = _fixed_bucket_labels(
+            observations["breakeven_moneyness_pct"],
+            bins=[-float("inf"), 0.02, 0.05, 0.10, float("inf")],
+            labels=["<=2%", "2-5%", "5-10%", ">10%"],
+        )
+        observations["liquidity_bucket"] = _fixed_bucket_labels(
+            observations["liquidity_score"],
+            bins=[-float("inf"), 0.25, 0.50, 0.75, float("inf")],
+            labels=["<=0.25", "0.25-0.50", "0.50-0.75", ">0.75"],
+        )
+        observations["spread_width_bucket"] = _fixed_bucket_labels(
+            observations["spread_market_width_pct"],
+            bins=[-float("inf"), 0.10, 0.25, 0.50, float("inf")],
+            labels=["<=10%", "10-25%", "25-50%", ">50%"],
+        )
+        observations["volatility_regime_bucket"] = _fixed_bucket_labels(
+            observations["implied_volatility"],
+            bins=[-float("inf"), 0.15, 0.25, 0.40, float("inf")],
+            labels=["<=15%", "15-25%", "25-40%", ">40%"],
+        )
+        observations["prediction_quarter"] = observations["prediction_timestamp"].map(_prediction_quarter_label)
+
+        metric_names = tuple(metric_columns or _DEFAULT_METRIC_COLUMNS)
+        for metric_name in metric_names:
+            if metric_name not in observations.columns:
+                raise ValueError(f"Requested metric column is unavailable for effectiveness study: {metric_name}")
+
+        metric_bucket_frames = [
+            _build_metric_bucket_summary(
+                observations,
+                metric_name=metric_name,
+                bucket_count=bucket_count,
+            )
+            for metric_name in metric_names
+        ]
+        metric_buckets = (
+            pd.concat(metric_bucket_frames, ignore_index=True)
+            if metric_bucket_frames
+            else pd.DataFrame(columns=list(METRIC_BUCKET_COLUMNS))
+        )
+
+        segment_summary = _build_segment_summary(
+            observations,
+            segment_columns=tuple(segment_columns or _DEFAULT_SEGMENT_COLUMNS),
+        )
+        execution_sensitivity = _build_execution_sensitivity(observations)
+        tail_concentration = _build_tail_concentration(observations)
+
+        overall_summary = _summarize_group(observations)
+        ranking_top_bottom_pnl, ranking_top_bottom_profit = _top_bottom_differences(
+            metric_buckets,
+            metric_name="ranking_score",
+        )
+        ev_top_bottom_pnl, ev_top_bottom_profit = _top_bottom_differences(
+            metric_buckets,
+            metric_name="expected_value",
+        )
+        calibration_summary_row = (
+            calibration_summary.iloc[0] if not calibration_summary.empty else None
+        )
+
+    excluded_opportunity_count = int(len(exclusions))
+    missing_reason_mask = exclusions["exclusion_reason"].astype("string").isin(
+        ["missing_realized_outcome", "missing_realized_underlying"]
+    ) if not exclusions.empty else pd.Series([], dtype=bool)
+    missing_realized_underlying_mask = exclusions["exclusion_reason"].astype("string").eq(
+        "missing_realized_underlying"
+    ) if not exclusions.empty else pd.Series([], dtype=bool)
+    future_outcome_mask = exclusions["exclusion_reason"].astype("string").eq(
+        "realized_outcome_not_yet_available_as_of_cutoff"
+    ) if not exclusions.empty else pd.Series([], dtype=bool)
+    missing_realized_event_dates = sorted(
+        {
+            str(value)
+            for value in exclusion_summary.loc[
+                exclusion_summary["exclusion_reason"].isin(
+                    ["missing_realized_outcome", "missing_realized_underlying"]
+                ),
+                "required_event_date",
+            ].dropna().tolist()
+            if str(value) and str(value) != "unknown"
+        }
+    ) if not exclusion_summary.empty else []
+    evaluated_opportunity_count = int(len(observations))
+    evaluation_coverage_rate = float(evaluated_opportunity_count / input_opportunity_count)
+    if observations.empty:
+        ranking_score_spearman_realized_pnl = float("nan")
+        ranking_score_spearman_realized_event = float("nan")
+        expected_value_spearman_realized_pnl = float("nan")
+        probability_spearman_realized_event = float("nan")
+        ranking_score_auc_realized_event = float("nan")
+        ranking_score_auc_realized_profit = float("nan")
+        expected_value_auc_realized_profit = float("nan")
+        probability_auc_realized_event = float("nan")
+    else:
+        ranking_score_spearman_realized_pnl = _safe_spearman(
+            observations["ranking_score"],
+            observations["realized_pnl_executable"],
+        )
+        ranking_score_spearman_realized_event = _safe_spearman(
+            observations["ranking_score"],
+            observations["realized_event"],
+        )
+        expected_value_spearman_realized_pnl = _safe_spearman(
+            observations["expected_value"],
+            observations["realized_pnl_executable"],
+        )
+        probability_spearman_realized_event = _safe_spearman(
+            observations["predicted_probability"],
+            observations["realized_event"],
+        )
+        ranking_score_auc_realized_event = _binary_auc(
+            observations["ranking_score"],
+            observations["realized_event"],
+        )
+        ranking_score_auc_realized_profit = _binary_auc(
+            observations["ranking_score"],
+            observations["realized_positive_pnl_executable"],
+        )
+        expected_value_auc_realized_profit = _binary_auc(
+            observations["expected_value"],
+            observations["realized_positive_pnl_executable"],
+        )
+        probability_auc_realized_event = _binary_auc(
+            observations["predicted_probability"],
+            observations["realized_event"],
+        )
+
     summary = pd.DataFrame(
         [
             {
                 "input_opportunity_count": input_opportunity_count,
-                "evaluated_opportunity_count": int(len(observations)),
-                "excluded_missing_outcome_count": excluded_missing_outcome_count,
+                "evaluated_opportunity_count": evaluated_opportunity_count,
+                "excluded_opportunity_count": excluded_opportunity_count,
+                "evaluation_coverage_rate": evaluation_coverage_rate,
+                "excluded_opportunity_rate": float(excluded_opportunity_count / input_opportunity_count),
+                "excluded_missing_outcome_count": int(missing_reason_mask.sum()) if not exclusions.empty else 0,
+                "excluded_missing_realized_underlying_count": (
+                    int(missing_realized_underlying_mask.sum()) if not exclusions.empty else 0
+                ),
+                "excluded_future_outcome_count": (
+                    int(future_outcome_mask.sum()) if not exclusions.empty else 0
+                ),
+                "missing_realized_event_date_count": int(len(missing_realized_event_dates)),
+                "missing_realized_event_dates": ", ".join(missing_realized_event_dates),
                 "available_outcome_count": int(len(validated_outcomes)),
-                "evaluated_outcome_count": int(observations["required_outcome_key"].nunique()),
+                "evaluated_outcome_count": (
+                    int(observations["required_outcome_key"].nunique()) if not observations.empty else 0
+                ),
                 "shared_outcome_key_count": (
                     int(calibration_summary_row["shared_outcome_key_count"])
                     if calibration_summary_row is not None
-                    else int((observations["required_outcome_key"].value_counts() > 1).sum())
+                    else (
+                        int((observations["required_outcome_key"].value_counts() > 1).sum())
+                        if not observations.empty
+                        else 0
+                    )
+                ),
+                "evaluation_status": (
+                    "complete" if evaluated_opportunity_count > 0 else "insufficient_realized_outcome_data"
                 ),
                 "mean_predicted_probability": overall_summary["mean_predicted_probability"],
                 "observed_event_rate": overall_summary["observed_event_rate"],
@@ -1210,38 +1640,14 @@ def evaluate_scanner_effectiveness(
                 "total_expected_value": overall_summary["total_expected_value"],
                 "total_realized_pnl_executable": overall_summary["total_realized_pnl_executable"],
                 "total_realized_pnl_quoted": overall_summary["total_realized_pnl_quoted"],
-                "ranking_score_spearman_realized_pnl": _safe_spearman(
-                    observations["ranking_score"],
-                    observations["realized_pnl_executable"],
-                ),
-                "ranking_score_spearman_realized_event": _safe_spearman(
-                    observations["ranking_score"],
-                    observations["realized_event"],
-                ),
-                "expected_value_spearman_realized_pnl": _safe_spearman(
-                    observations["expected_value"],
-                    observations["realized_pnl_executable"],
-                ),
-                "probability_spearman_realized_event": _safe_spearman(
-                    observations["predicted_probability"],
-                    observations["realized_event"],
-                ),
-                "ranking_score_auc_realized_event": _binary_auc(
-                    observations["ranking_score"],
-                    observations["realized_event"],
-                ),
-                "ranking_score_auc_realized_profit": _binary_auc(
-                    observations["ranking_score"],
-                    observations["realized_positive_pnl_executable"],
-                ),
-                "expected_value_auc_realized_profit": _binary_auc(
-                    observations["expected_value"],
-                    observations["realized_positive_pnl_executable"],
-                ),
-                "probability_auc_realized_event": _binary_auc(
-                    observations["predicted_probability"],
-                    observations["realized_event"],
-                ),
+                "ranking_score_spearman_realized_pnl": ranking_score_spearman_realized_pnl,
+                "ranking_score_spearman_realized_event": ranking_score_spearman_realized_event,
+                "expected_value_spearman_realized_pnl": expected_value_spearman_realized_pnl,
+                "probability_spearman_realized_event": probability_spearman_realized_event,
+                "ranking_score_auc_realized_event": ranking_score_auc_realized_event,
+                "ranking_score_auc_realized_profit": ranking_score_auc_realized_profit,
+                "expected_value_auc_realized_profit": expected_value_auc_realized_profit,
+                "probability_auc_realized_event": probability_auc_realized_event,
                 "ranking_score_top_minus_bottom_mean_realized_pnl": ranking_top_bottom_pnl,
                 "ranking_score_top_minus_bottom_profit_rate": ranking_top_bottom_profit,
                 "expected_value_top_minus_bottom_mean_realized_pnl": ev_top_bottom_pnl,
@@ -1251,28 +1657,35 @@ def evaluate_scanner_effectiveness(
         columns=list(EFFECTIVENESS_SUMMARY_COLUMNS),
     )
 
-    observations = observations.sort_values(
-        by=["prediction_timestamp", "prediction_id"],
-        kind="stable",
-    ).reset_index(drop=True)
-    for column in EFFECTIVENESS_OBSERVATION_COLUMNS:
-        if column not in observations.columns:
-            observations[column] = pd.NA
-    observations = observations.loc[:, list(EFFECTIVENESS_OBSERVATION_COLUMNS)]
+    if observations.empty:
+        serialized_observations = observations.copy()
+    else:
+        serialized_observations = observations.sort_values(
+            by=["prediction_timestamp", "prediction_id"],
+            kind="stable",
+        ).reset_index(drop=True)
+        for column in EFFECTIVENESS_OBSERVATION_COLUMNS:
+            if column not in serialized_observations.columns:
+                serialized_observations[column] = pd.NA
+        serialized_observations = serialized_observations.loc[:, list(EFFECTIVENESS_OBSERVATION_COLUMNS)]
 
     report_markdown = build_effectiveness_report(
         summary,
+        exclusions,
+        exclusion_summary,
         metric_buckets,
-        calibration_artifacts.summary,
+        calibration_summary,
         execution_sensitivity,
         tail_concentration,
     )
     return EffectivenessEvaluationArtifacts(
         predictions=predictions.reset_index(drop=True),
-        calibration_summary=calibration_artifacts.summary.reset_index(drop=True),
-        calibration_bins=calibration_artifacts.reliability_bins.reset_index(drop=True),
-        calibration_observations=calibration_artifacts.observations.reset_index(drop=True),
-        observations=observations,
+        calibration_summary=calibration_summary,
+        calibration_bins=calibration_bins,
+        calibration_observations=calibration_observations,
+        observations=serialized_observations,
+        exclusions=exclusions.reset_index(drop=True),
+        exclusion_summary=exclusion_summary.reset_index(drop=True),
         summary=summary,
         metric_buckets=metric_buckets.reset_index(drop=True),
         segment_summary=segment_summary.reset_index(drop=True),
