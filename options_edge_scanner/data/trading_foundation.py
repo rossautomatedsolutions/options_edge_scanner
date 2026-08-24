@@ -101,6 +101,25 @@ def _normalize_timestamp(value: object) -> pd.Timestamp | None:
     return pd.Timestamp(parsed).tz_localize(None)
 
 
+def _parse_mixed_utc_timestamp_series(values: pd.Series) -> pd.Series:
+    """Parse one timestamp series while tolerating mixed-but-valid source formats."""
+    parsed = pd.to_datetime(values, errors="coerce", utc=True)
+    if values.empty or parsed.notna().all():
+        return parsed
+
+    fallback_mask = values.notna() & parsed.isna()
+    if not fallback_mask.any():
+        return parsed
+
+    fallback_parsed = values.loc[fallback_mask].map(
+        lambda value: pd.to_datetime(value, errors="coerce", utc=True)
+    )
+    reparsed = pd.to_datetime(fallback_parsed, errors="coerce", utc=True)
+    repaired = parsed.copy()
+    repaired.loc[fallback_mask] = reparsed
+    return repaired
+
+
 def _normalize_event_dates(event_dates: Sequence[object]) -> list[pd.Timestamp]:
     """Normalize one explicit set of required event dates."""
     return sorted({_normalize_date(value, label="event_date") for value in event_dates})
@@ -169,7 +188,7 @@ def _load_eod_frame(historical_data_root: str | Path, *, ticker: str) -> pd.Data
 
     working = frame.copy()
     working["close"] = pd.to_numeric(working["close"], errors="coerce")
-    working["t"] = pd.to_datetime(working["t"], errors="coerce", utc=True)
+    working["t"] = _parse_mixed_utc_timestamp_series(working["t"])
     working = working.dropna(subset=["close", "t"]).copy()
     working["t"] = working["t"].dt.tz_localize(None)
     working["session_date"] = working["t"].dt.normalize()
@@ -190,7 +209,7 @@ def _load_eod_audit_frame(historical_data_root: str | Path, *, ticker: str) -> p
 
     working = frame.copy()
     working["_close_numeric"] = pd.to_numeric(working["close"], errors="coerce")
-    working["_t_parsed"] = pd.to_datetime(working["t"], errors="coerce", utc=True)
+    working["_t_parsed"] = _parse_mixed_utc_timestamp_series(working["t"])
     parsed_mask = working["_t_parsed"].notna()
     working["_session_date"] = pd.NaT
     working.loc[parsed_mask, "_session_date"] = (

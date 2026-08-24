@@ -17,6 +17,7 @@ from options_edge_scanner.data.trading_foundation import (
     TRADING_FOUNDATION_DAY_PRECISION_POLICY,
     audit_trading_foundation_eod_coverage,
     build_trading_foundation_snapshot_id,
+    normalize_trading_foundation_eod_to_realized_underlying,
     write_trading_foundation_realized_underlying,
     write_trading_foundation_snapshot_manifest,
 )
@@ -403,6 +404,71 @@ def test_trading_foundation_realized_underlying_manifest_export_excludes_future_
     written = pd.read_csv(output_path)
     assert observations["event_date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-07-17"]
     assert written["event_date"].tolist() == ["2026-07-17"]
+
+
+def test_trading_foundation_eod_normalization_supports_mixed_timestamp_formats(
+    tmp_path: Path,
+) -> None:
+    historical_data_root = tmp_path / "historical_data"
+    _write_trading_foundation_eod(
+        historical_data_root,
+        rows=[
+            {
+                "close": 711.68,
+                "high": 712.88,
+                "low": 709.27,
+                "n": 1,
+                "open": 711.75,
+                "t": "2026-04-28 04:00:00+00:00",
+                "volume": 100,
+                "vw": 711.11,
+                "symbol": "SPY",
+            },
+            {
+                "close": 746.75,
+                "high": 748.18,
+                "low": 743.88,
+                "n": 1,
+                "open": 747.765,
+                "t": "2026-06-18T04:00:00Z",
+                "volume": 100,
+                "vw": 746.20,
+                "symbol": "SPY",
+            },
+            {
+                "close": 760.12,
+                "high": 761.55,
+                "low": 758.44,
+                "n": 1,
+                "open": 759.20,
+                "t": "2026-08-21T04:00:00Z",
+                "volume": 100,
+                "vw": 759.81,
+                "symbol": "SPY",
+            },
+        ],
+    )
+
+    observations = normalize_trading_foundation_eod_to_realized_underlying(
+        historical_data_root,
+        ticker="SPY",
+        event_dates=["2026-04-28", "2026-06-18", "2026-08-21"],
+        acquired_at="2026-08-24T12:00:00Z",
+    )
+    audit = audit_trading_foundation_eod_coverage(
+        historical_data_root,
+        ticker="SPY",
+        event_dates=["2026-04-28", "2026-06-18", "2026-08-21"],
+    )
+
+    assert observations["event_date"].dt.strftime("%Y-%m-%d").tolist() == [
+        "2026-04-28",
+        "2026-06-18",
+        "2026-08-21",
+    ]
+    assert observations["observed_price"].tolist() == [711.68, 746.75, 760.12]
+    assert audit.available_event_dates == ("2026-04-28", "2026-06-18", "2026-08-21")
+    assert audit.missing_event_dates == ()
 
 
 def test_trading_foundation_eod_coverage_audit_classifies_missing_trading_days_and_invalid_rows(
