@@ -58,6 +58,47 @@ Real main-machine blocker narrowed further after the successful 4/4 historical s
   - an upstream Trading Foundation ingestion/data-quality gap where a raw row exists but its `close` or `t` value is invalid
 - there is no evidence in current repo code that these three dates should be silently rolled to a different session
 
+## 0.1 Addendum - Baseline Historical Effectiveness Framework (2026-08-24)
+
+Targeted validation on Monday, August 24, 2026:
+
+- `pytest -q tests/test_effectiveness_evaluation.py`: `3 passed`
+- `pytest -q tests/test_historical_effectiveness_eval_cli.py`: `1 passed`
+- `pytest -q tests/test_probability_calibration.py tests/test_trading_foundation_integration.py tests/test_historical_snapshot_scan_cli.py`: `41 passed`
+- `python -m compileall options_edge_scanner run_scanner.py`: passed
+
+New capability added on Monday, August 24, 2026:
+
+- `options_edge_scanner.effectiveness` now evaluates the maintained baseline scanner against separate realized outcomes without replacing ranking logic
+- new CLI `python -m options_edge_scanner.cli.historical_effectiveness_eval` can build a strict Trading Foundation manifest from canonical `option_snapshot` files when needed, run the maintained historical scanner, materialize realized outcomes from canonical `eod` data, and emit both calibration and expiration-held effectiveness artifacts
+- the effectiveness layer measures realized expiration-held spread value under three entry-price references: `quoted_debit`, current execution-adjusted `debit`, and `spread_ask` when available
+- machine-readable outputs now include joined effectiveness observations, ordered score buckets, segment summaries, execution-sensitivity tables, tail-concentration tables, and a markdown report
+
+Important boundary:
+
+- this is still not a lifecycle options backtester
+- no intraday exits, time stops, option OHLC marks, or historical fill records are introduced
+- the framework intentionally evaluates the current baseline scanner honestly instead of reweighting or replacing `ranking_score`
+
+## 0.2 Addendum - Main-Machine Validation Attempt Status (2026-08-24)
+
+Follow-up validation status recorded on Monday, August 24, 2026:
+
+- see `docs/effectiveness_main_machine_validation_status_2026-08-24.md`
+
+Current outcome from this environment:
+
+- the local effectiveness worktree validates cleanly with `pytest -q` and `python -m compileall options_edge_scanner run_scanner.py`
+- `origin/main` is still `2032d598deebee9619d69634cfa6c318a9c85440` and does not yet contain the effectiveness framework
+- the exact requested OneDrive main-machine paths were not mounted in this session
+- the accessible local Trading Foundation mirror at `C:\GitHub\Trading_Foundation\historical_data` contains only `SPY\schema_summary.json` and no populated `option_snapshot/` or `eod/` artifacts
+- therefore empirical effectiveness classification from this environment remains `INSUFFICIENT DATA TO DETERMINE`
+
+Practical interpretation:
+
+- the framework itself appears ready for a real empirical run once deployed to the actual main-machine repo and pointed at a mounted readable historical dataset
+- the remaining blocker is data/deployment availability in the current environment rather than a discovered logic defect in the effectiveness extension
+
 ## 1. Executive Summary
 
 `options_edge_scanner` is a research-only offline options scanner centered on deterministic debit vertical spread screening from local option-chain snapshots. The maintained path is not a live-trading system. It is a contract-driven local analytics pipeline that:
@@ -87,12 +128,14 @@ What is actually working today:
 - provider-neutral realized-underlying normalization plus Alpaca acquisition for outcome materialization
 - canonical Trading Foundation EOD normalization for outcome materialization via `options_edge_scanner.cli.trading_foundation_realized_underlying_export`
 - explicit realized-outcome materialization and calibration evaluation
+- one-command historical effectiveness evaluation for the maintained baseline scanner via `options_edge_scanner.cli.historical_effectiveness_eval`
 
 What is partial, experimental, or intentionally not real yet:
 
 - the probability model is still a simple `lognormal_breakeven` baseline, not an empirically calibrated alpha model
 - the execution model is a conservative heuristic, not a historical fill simulator
 - the backtest layer is a placeholder contract adapter only
+- the new effectiveness layer is expiration-held research accounting only, not a lifecycle backtester
 - live/paper trading does not exist
 - portfolio/risk controls are limited to filters and optional concentration caps
 - only SPY expiration-close terminal outcome semantics are implemented for realized-outcome work
@@ -240,6 +283,25 @@ normalized realized-underlying CSV(s)
 ProbabilityPredictionRow + RealizedOutcomeRow
 -> evaluate_probability_predictions()
 -> calibration summary / reliability bins / joined observations
+```
+
+Strict historical + effectiveness flow:
+
+```text
+canonical Trading Foundation option_snapshot files
+-> strict manifest
+-> build_scanner_opportunities() per snapshot
+-> combined historical ScannerOpportunityRow CSV
+
+strict manifest + canonical Trading Foundation eod/<TICKER>_1D.csv
+-> normalize realized underlying
+-> materialize_realized_outcomes_from_snapshot_manifest()
+-> RealizedOutcomeRow CSV
+
+ScannerOpportunityRow + RealizedOutcomeRow
+-> evaluate_scanner_effectiveness()
+-> effectiveness observations / metric buckets / segment summaries
+-> execution sensitivity / tail concentration / markdown report
 ```
 
 ## 3. Data Contracts

@@ -333,6 +333,40 @@ Leakage controls include:
 - shared `required_outcome_key` values across predictions are rejected by default because they represent correlated observations
 - time-split helpers are forward-only: fixed holdout, expanding, and rolling
 
+## Historical Effectiveness Artifacts
+
+The maintained baseline scanner can now be evaluated against separate realized outcomes for expiration-held economic effectiveness work.
+The detailed narrative contract lives in [effectiveness_contracts.md](effectiveness_contracts.md).
+
+### EffectivenessObservationRow
+
+Historical effectiveness joins `ScannerOpportunityRow` plus realized outcomes into one row-level research artifact.
+
+Important fields include:
+
+- identity and timing: `prediction_id`, `snapshot_id`, `prediction_timestamp`, `quote_observed_at`, `as_of`, `expiration`
+- baseline scanner economics: `debit`, `quoted_debit`, `expected_value`, `ranking_score`, `probability_of_profit`
+- execution diagnostics: `spread_bid`, `spread_ask`, `spread_market_width`, `entry_slippage`, `liquidity_score`
+- realized labels: `realized_terminal_underlying_price`, `realized_event`, `spread_expiration_value`
+- realized economics: `realized_pnl_quoted`, `realized_pnl_executable`, `realized_pnl_ask`
+- derived research buckets: `dte_bucket`, `breakeven_moneyness_bucket`, `liquidity_bucket`, `spread_width_bucket`, `volatility_regime_bucket`, `prediction_quarter`
+
+Current economic interpretation:
+
+- `realized_pnl_executable` is the repo's expiration-held realized PnL under the existing execution-adjusted entry debit plus the same fixed transaction-cost constant used by the EV model
+- `realized_pnl_quoted` keeps the midpoint-style reference for comparison
+- `realized_pnl_ask` is a more conservative displayed-ask reference when available
+
+### Effectiveness Summary Outputs
+
+`evaluate_scanner_effectiveness(...)` emits:
+
+- one overall summary row with evaluated row counts, realized event and profit rates, realized-vs-expected value comparisons, and discrimination metrics
+- ordered metric-bucket summaries for `ranking_score`, `expected_value`, and any additional requested score columns
+- segment summaries across DTE, strategy type, moneyness, liquidity, spread width, volatility regime, and time period
+- execution-sensitivity summaries for quoted midpoint, baseline executable debit, and displayed ask references
+- tail-concentration summaries plus a markdown report
+
 ## Offline Adapter
 
 The local-file adapter lives in [options_edge_scanner/data/loader.py](../options_edge_scanner/data/loader.py).

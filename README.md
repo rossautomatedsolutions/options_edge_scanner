@@ -42,6 +42,7 @@ The current Trading Foundation historical-data integration status lives in [docs
 - provider-neutral realized underlying contracts and Alpaca historical stock-bar normalization in [options_edge_scanner/data/realized_underlying.py](options_edge_scanner/data/realized_underlying.py), [options_edge_scanner/data/alpaca_historical.py](options_edge_scanner/data/alpaca_historical.py), and [options_edge_scanner/cli/alpaca_realized_underlying_acquire.py](options_edge_scanner/cli/alpaca_realized_underlying_acquire.py)
 - canonical Trading Foundation EOD normalization into the same realized-underlying contract in [options_edge_scanner/data/trading_foundation.py](options_edge_scanner/data/trading_foundation.py) and [options_edge_scanner/cli/trading_foundation_realized_underlying_export.py](options_edge_scanner/cli/trading_foundation_realized_underlying_export.py)
 - strict realized outcome materialization from historical snapshot manifests plus normalized underlying artifacts in [options_edge_scanner/calibration/materialization.py](options_edge_scanner/calibration/materialization.py) and [options_edge_scanner/cli/materialize_realized_outcomes.py](options_edge_scanner/cli/materialize_realized_outcomes.py)
+- historical effectiveness evaluation for the maintained baseline scanner, including expiration-held realized PnL, bucket/decile analysis, execution sensitivity, tail concentration, and reviewable study reports in [options_edge_scanner/effectiveness](options_edge_scanner/effectiveness), [options_edge_scanner/cli/historical_effectiveness_eval.py](options_edge_scanner/cli/historical_effectiveness_eval.py), and [docs/effectiveness_contracts.md](docs/effectiveness_contracts.md)
 - optional Yahoo snapshot ingestion with metadata sidecars in [options_edge_scanner/yahoo_ingestion.py](options_edge_scanner/yahoo_ingestion.py)
 - contract and fixture coverage in [docs/data_contracts.md](docs/data_contracts.md) and [tests/fixtures](tests/fixtures)
 
@@ -197,6 +198,25 @@ Important boundary:
 
 A collection of local snapshots is still not automatically a valid backtest dataset. The repo does not yet model execution, exits, liquidity, survivorship, or portfolio behavior.
 
+For end-to-end historical effectiveness research on the maintained baseline scanner, use:
+
+```powershell
+python -m options_edge_scanner.cli.historical_effectiveness_eval `
+  --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data `
+  --ticker SPY `
+  --start-date 2025-05-27 `
+  --end-date 2025-05-30 `
+  --realized-as-of 2026-08-24T12:00:00Z `
+  --output-dir outputs/historical_effectiveness/spy_20250527_20250530
+```
+
+That research workflow:
+
+- reuses the strict historical scanner rather than replacing ranking logic
+- labels realized expiration-held spread value from separate realized outcomes
+- writes calibration summaries plus effectiveness observations, metric buckets, segment summaries, execution-sensitivity tables, tail-concentration tables, and a markdown report
+- remains bounded to hold-to-expiration research accounting, not a lifecycle options backtester
+
 If the input file lacks `underlying_price`, pass `--spot`.
 If you override spot safely, also pass `--spot-observed-at` and optionally `--spot-source`.
 If the input file lacks quote provenance and you intentionally want an unsafe ad hoc run, pass `--allow-unsafe-as-of`.
@@ -228,8 +248,9 @@ The optional JSON report artifact includes deterministic row counts, active exec
 Safe scanner outputs can be projected into the calibration prediction contract through `python -m options_edge_scanner.cli.export_probability_predictions` or `options_edge_scanner.calibration.export_scanner_probability_predictions(...)`.
 Those prediction artifacts are evaluated against separate realized-outcome artifacts by [options_edge_scanner/cli/probability_calibration_eval.py](options_edge_scanner/cli/probability_calibration_eval.py).
 The realized-outcome artifacts themselves can now be materialized from strict historical snapshot manifests plus normalized underlying observations.
+The new historical effectiveness CLI layers realized economic outcome analysis on top of those same contracts without redesigning the baseline scanner.
 
-See [docs/data_contracts.md](docs/data_contracts.md) for the scanner/dataframe contracts and [docs/calibration_contracts.md](docs/calibration_contracts.md) for the calibration workflow.
+See [docs/data_contracts.md](docs/data_contracts.md) for the scanner/dataframe contracts, [docs/calibration_contracts.md](docs/calibration_contracts.md) for the calibration workflow, and [docs/effectiveness_contracts.md](docs/effectiveness_contracts.md) for the expiration-held effectiveness workflow.
 
 ## Legacy Path
 
@@ -252,6 +273,7 @@ python -m options_edge_scanner.cli.alpaca_realized_underlying_acquire --ticker S
 python -m options_edge_scanner.cli.trading_foundation_realized_underlying_export --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data --ticker SPY --manifest outputs/trading_foundation/spy_manifest.csv --realized-as-of 2026-08-23T12:00:00Z --output outputs/trading_foundation/spy_realized_underlying.csv
 python -m options_edge_scanner.cli.materialize_realized_outcomes --manifest path/to/strict_spy_snapshot_manifest.csv --realized-underlying outputs/trading_foundation/spy_realized_underlying.csv --realized-as-of 2026-08-23T12:00:00Z --output outputs/realized_outcomes/spy_expiration_outcomes.csv
 python -m options_edge_scanner.cli.probability_calibration_eval --predictions tests/fixtures/sample_probability_predictions.csv --outcomes tests/fixtures/sample_realized_outcomes.csv --summary-output outputs/calibration_summary.csv --bins-output outputs/calibration_bins.csv --observations-output outputs/calibration_observations.csv --allow-shared-outcome-keys
+python -m options_edge_scanner.cli.historical_effectiveness_eval --historical-data-root C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data --ticker SPY --start-date 2025-05-27 --end-date 2025-05-30 --realized-as-of 2026-08-24T12:00:00Z --output-dir outputs/historical_effectiveness/spy_20250527_20250530
 ```
 
 The scanner and tests are offline.
