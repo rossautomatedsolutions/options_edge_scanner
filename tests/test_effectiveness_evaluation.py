@@ -56,6 +56,31 @@ def _build_realized_outcomes(terminal_price: float) -> pd.DataFrame:
     )
 
 
+def _build_realized_outcomes_for_expirations(
+    terminal_price_by_expiration: dict[str, float],
+) -> pd.DataFrame:
+    records: list[dict[str, object]] = []
+    for expiration, terminal_price in terminal_price_by_expiration.items():
+        records.append(
+            {
+                "outcome_id": (
+                    f"outcome::XYZ|{expiration}|expiration|terminal_underlying_price"
+                ),
+                "required_outcome_key": (
+                    f"XYZ|{expiration}|expiration|terminal_underlying_price"
+                ),
+                "ticker": "XYZ",
+                "expiration": expiration,
+                "required_outcome_horizon": "expiration",
+                "realized_outcome_measure": "terminal_underlying_price",
+                "realized_terminal_underlying_price": terminal_price,
+                "realized_outcome_observed_at": f"{expiration}T20:00:00Z",
+                "realized_outcome_source": "fixture.expiration",
+            }
+        )
+    return pd.DataFrame(records)
+
+
 def test_effectiveness_evaluation_labels_realized_expiration_payoffs_correctly() -> None:
     opportunities = _build_opportunities()
     outcomes = _build_realized_outcomes(terminal_price=93.0)
@@ -184,6 +209,60 @@ def test_effectiveness_evaluation_excludes_missing_outcomes_without_contaminatin
     assert "2026-02-20" in artifacts.report_markdown
 
 
+def test_effectiveness_evaluation_maps_multi_expiration_snapshot_rows_to_matching_outcomes() -> None:
+    base_opportunities = _build_opportunities()
+    multi_expiration_same_snapshot = _clone_opportunities_with_expiration(
+        base_opportunities,
+        expiration="2026-02-20",
+        snapshot_id="xyz-20260102-153000",
+        quote_observed_at="2026-01-02T15:30:00Z",
+    )
+    opportunities = pd.concat(
+        [multi_expiration_same_snapshot, base_opportunities],
+        ignore_index=True,
+    )
+    outcomes = _build_realized_outcomes_for_expirations(
+        {
+            "2026-02-13": 101.0,
+            "2026-02-20": 108.0,
+        }
+    )
+
+    artifacts = evaluate_scanner_effectiveness(
+        opportunities,
+        outcomes,
+        drop_missing_outcomes=True,
+    )
+
+    observations = artifacts.observations
+    assert len(observations) == len(opportunities)
+    assert artifacts.exclusions.empty
+    realized_prices_by_expiration = (
+        observations.groupby("expiration", dropna=False)["realized_terminal_underlying_price"]
+        .unique()
+        .map(list)
+        .to_dict()
+    )
+    assert realized_prices_by_expiration == {
+        pd.Timestamp("2026-02-13"): [101.0],
+        pd.Timestamp("2026-02-20"): [108.0],
+    }
+
+    otherwise_similar_spreads = observations.loc[
+        (observations["spread_type"] == "bear_put_debit")
+        & (observations["lower_strike"] == 100.0)
+        & (observations["upper_strike"] == 110.0)
+    ].sort_values("expiration", kind="stable")
+    assert otherwise_similar_spreads["expiration"].tolist() == [
+        pd.Timestamp("2026-02-13"),
+        pd.Timestamp("2026-02-20"),
+    ]
+    assert otherwise_similar_spreads["realized_terminal_underlying_price"].tolist() == [
+        101.0,
+        108.0,
+    ]
+
+
 def test_effectiveness_evaluation_reports_insufficient_data_when_all_opportunities_are_unevaluable() -> None:
     opportunities = _build_opportunities()
     outcomes = _build_realized_outcomes(terminal_price=101.0).iloc[0:0].copy()
@@ -217,6 +296,75 @@ def test_effectiveness_evaluation_reports_insufficient_data_when_all_opportuniti
     assert "no evaluable opportunities had realized outcomes" in artifacts.report_markdown
 
 
+def test_effectiveness_evaluation_missing_outcome_exclusions_do_not_reindex_available_expirations() -> None:
+    base_opportunities = _build_opportunities()
+    missing_opportunities = _clone_opportunities_with_expiration(
+        base_opportunities,
+        expiration="2026-02-20",
+        snapshot_id="xyz-20260102-153000",
+        quote_observed_at="2026-01-02T15:30:00Z",
+    )
+    later_available_opportunities = _clone_opportunities_with_expiration(
+        base_opportunities,
+        expiration="2026-02-27",
+        snapshot_id="xyz-20260102-153000",
+        quote_observed_at="2026-01-02T15:30:00Z",
+    )
+    opportunities = pd.concat(
+        [
+            missing_opportunities,
+            later_available_opportunities,
+            base_opportunities,
+        ],
+        ignore_index=True,
+    )
+    outcomes = _build_realized_outcomes_for_expirations(
+        {
+            "2026-02-13": 99.0,
+            "2026-02-27": 111.0,
+        }
+    )
+
+    artifacts = evaluate_scanner_effectiveness(
+        opportunities,
+        outcomes,
+        drop_missing_outcomes=True,
+        exclusion_details=pd.DataFrame(
+            [
+                {
+                    "required_outcome_key": "XYZ|2026-02-20|expiration|terminal_underlying_price",
+                    "exclusion_reason": "missing_realized_underlying",
+                    "exclusion_detail": "Canonical realized EOD observation is unavailable.",
+                    "required_event_date": "2026-02-20",
+                    "issue_classification": "trading_day_absent_from_canonical_eod",
+                    "previous_available_event_date": "2026-02-19",
+                    "next_available_event_date": "2026-02-21",
+                }
+            ]
+        ),
+    )
+
+    observations = artifacts.observations
+    assert set(observations["expiration"]) == {
+        pd.Timestamp("2026-02-13"),
+        pd.Timestamp("2026-02-27"),
+    }
+    realized_prices_by_expiration = (
+        observations.groupby("expiration", dropna=False)["realized_terminal_underlying_price"]
+        .unique()
+        .map(list)
+        .to_dict()
+    )
+    assert realized_prices_by_expiration == {
+        pd.Timestamp("2026-02-13"): [99.0],
+        pd.Timestamp("2026-02-27"): [111.0],
+    }
+    assert len(artifacts.exclusions) == len(missing_opportunities)
+    assert set(artifacts.exclusions["required_event_date"]) == {
+        pd.Timestamp("2026-02-20")
+    }
+
+
 def test_effectiveness_evaluation_can_drop_missing_outcomes_explicitly() -> None:
     opportunities = _build_opportunities()
     outcomes = _build_realized_outcomes(terminal_price=101.0).iloc[0:0].copy()
@@ -226,4 +374,24 @@ def test_effectiveness_evaluation_can_drop_missing_outcomes_explicitly() -> None
             opportunities,
             outcomes,
             drop_missing_outcomes=False,
+        )
+
+
+def test_effectiveness_evaluation_rejects_duplicate_realized_outcome_keys() -> None:
+    opportunities = _build_opportunities()
+    duplicate_outcomes = pd.concat(
+        [
+            _build_realized_outcomes(terminal_price=101.0),
+            _build_realized_outcomes(terminal_price=102.0).assign(
+                outcome_id="outcome::XYZ|2026-02-13|expiration|terminal_underlying_price::duplicate"
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    with pytest.raises(ValueError, match="required_outcome_key values must be unique in realized outcomes"):
+        evaluate_scanner_effectiveness(
+            opportunities,
+            duplicate_outcomes,
+            drop_missing_outcomes=True,
         )

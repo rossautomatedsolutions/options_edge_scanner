@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import pandas as pd
+from pandas.errors import MergeError
 
 from options_edge_scanner.calibration import (
     build_required_outcome_key,
@@ -378,6 +379,46 @@ _EXCLUSION_DETAIL_COLUMNS = (
     "previous_available_event_date",
     "next_available_event_date",
 )
+_PREDICTION_ATTACHMENT_JOIN_COLUMNS = (
+    "snapshot_id",
+    "ticker",
+    "prediction_timestamp",
+    "quote_observed_at",
+    "as_of",
+    "expiration",
+    "spread_type",
+    "lower_strike",
+    "upper_strike",
+    "long_strike",
+    "short_strike",
+    "probability_model_name",
+    "probability_model_version",
+    "predicted_event_name",
+    "predicted_event_direction",
+    "predicted_event_operator",
+    "predicted_event_threshold",
+    "predicted_event_horizon",
+)
+_OUTCOME_JOIN_DIAGNOSTIC_COLUMNS = (
+    "prediction_id",
+    "snapshot_id",
+    "ticker",
+    "spread_type",
+    "scanner_opportunity_expiration",
+    "realized_outcome_expiration",
+    "long_leg_expiration",
+    "short_leg_expiration",
+    "required_outcome_key",
+    "realized_outcome_key",
+    "prediction_timestamp",
+    "quote_observed_at",
+    "as_of",
+    "lower_strike",
+    "upper_strike",
+    "long_strike",
+    "short_strike",
+    "option_type",
+)
 
 
 @dataclass(frozen=True)
@@ -436,6 +477,166 @@ def _empty_calibration_outputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFra
         pd.DataFrame(columns=list(CALIBRATION_SUMMARY_COLUMNS)),
         pd.DataFrame(columns=list(RELIABILITY_BIN_COLUMNS)),
         pd.DataFrame(columns=list(CALIBRATION_EVALUATION_OBSERVATION_COLUMNS)),
+    )
+
+
+def _duplicate_key_count(frame: pd.DataFrame, *, columns: Sequence[str]) -> int:
+    if frame.empty:
+        return 0
+    duplicate_mask = frame.duplicated(subset=list(columns), keep=False)
+    if not duplicate_mask.any():
+        return 0
+    return int(frame.loc[duplicate_mask, list(columns)].drop_duplicates().shape[0])
+
+
+def _resolve_prediction_timestamp_series(frame: pd.DataFrame) -> pd.Series:
+    return pd.Series(
+        [
+            max(pd.Timestamp(quote_observed_at), pd.Timestamp(as_of))
+            for quote_observed_at, as_of in zip(
+                frame["quote_observed_at"],
+                frame["as_of"],
+            )
+        ],
+        index=frame.index,
+        dtype="datetime64[ns]",
+    )
+
+
+def _attach_prediction_contract_fields(
+    opportunities: pd.DataFrame,
+    predictions: pd.DataFrame,
+) -> pd.DataFrame:
+    working = opportunities.copy()
+    working["prediction_timestamp"] = _resolve_prediction_timestamp_series(working)
+    working = working.drop(
+        columns=[
+            "prediction_id",
+            "required_outcome_key",
+            "observation_group_id",
+            "predicted_probability",
+        ],
+        errors="ignore",
+    )
+    prediction_fields = predictions.loc[
+        :,
+        list(_PREDICTION_ATTACHMENT_JOIN_COLUMNS)
+        + [
+            "prediction_id",
+            "required_outcome_key",
+            "observation_group_id",
+            "predicted_probability",
+        ],
+    ].copy()
+    try:
+        aligned = working.merge(
+            prediction_fields,
+            on=list(_PREDICTION_ATTACHMENT_JOIN_COLUMNS),
+            how="left",
+            sort=False,
+            validate="one_to_one",
+        )
+    except MergeError as exc:
+        raise ValueError(
+            "Scanner opportunity / exported prediction alignment failed before realized-outcome "
+            "evaluation. "
+            f"duplicate_opportunity_prediction_keys={_duplicate_key_count(working, columns=_PREDICTION_ATTACHMENT_JOIN_COLUMNS)} "
+            f"duplicate_exported_prediction_keys={_duplicate_key_count(prediction_fields, columns=_PREDICTION_ATTACHMENT_JOIN_COLUMNS)}"
+        ) from exc
+
+    if aligned["prediction_id"].isna().any():
+        unmatched = aligned.loc[
+            aligned["prediction_id"].isna(),
+            [
+                "snapshot_id",
+                "ticker",
+                "prediction_timestamp",
+                "quote_observed_at",
+                "as_of",
+                "expiration",
+                "spread_type",
+                "lower_strike",
+                "upper_strike",
+                "long_strike",
+                "short_strike",
+            ],
+        ].head(5)
+        raise ValueError(
+            "Scanner opportunity / exported prediction alignment failed before realized-outcome "
+            "evaluation. "
+            f"unmatched_opportunity_count={int(aligned['prediction_id'].isna().sum())} "
+            f"unmatched_preview={unmatched.to_dict('records')}"
+        )
+
+    return aligned
+
+
+def _format_timestamp_for_diagnostics(value: Any) -> str | None:
+    parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return None
+    return pd.Timestamp(parsed).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _format_date_for_diagnostics(value: Any) -> str | None:
+    parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return None
+    return pd.Timestamp(parsed).strftime("%Y-%m-%d")
+
+
+def _build_outcome_join_diagnostics(
+    observations: pd.DataFrame,
+) -> pd.DataFrame:
+    if observations.empty:
+        return pd.DataFrame(columns=list(_OUTCOME_JOIN_DIAGNOSTIC_COLUMNS))
+
+    mismatch_mask = (
+        ~observations["ticker"].eq(observations["ticker_outcome"])
+        | ~observations["expiration"].eq(observations["expiration_outcome"])
+    )
+    if not mismatch_mask.any():
+        return pd.DataFrame(columns=list(_OUTCOME_JOIN_DIAGNOSTIC_COLUMNS))
+
+    diagnostics = observations.loc[mismatch_mask].copy()
+    diagnostics["scanner_opportunity_expiration"] = diagnostics["expiration"].map(
+        _format_date_for_diagnostics
+    )
+    diagnostics["realized_outcome_expiration"] = diagnostics["expiration_outcome"].map(
+        _format_date_for_diagnostics
+    )
+    diagnostics["long_leg_expiration"] = diagnostics["expiration"].map(_format_date_for_diagnostics)
+    diagnostics["short_leg_expiration"] = diagnostics["expiration"].map(_format_date_for_diagnostics)
+    diagnostics["prediction_timestamp"] = diagnostics["prediction_timestamp"].map(
+        _format_timestamp_for_diagnostics
+    )
+    diagnostics["quote_observed_at"] = diagnostics["quote_observed_at"].map(
+        _format_timestamp_for_diagnostics
+    )
+    diagnostics["as_of"] = diagnostics["as_of"].map(_format_timestamp_for_diagnostics)
+    for column in _OUTCOME_JOIN_DIAGNOSTIC_COLUMNS:
+        if column not in diagnostics.columns:
+            diagnostics[column] = pd.NA
+
+    return diagnostics.loc[:, list(_OUTCOME_JOIN_DIAGNOSTIC_COLUMNS)].reset_index(drop=True)
+
+
+def _raise_outcome_join_integrity_error(
+    *,
+    message: str,
+    opportunities: pd.DataFrame,
+    realized_outcomes: pd.DataFrame,
+    observations: pd.DataFrame,
+) -> None:
+    diagnostics = _build_outcome_join_diagnostics(observations)
+    raise ValueError(
+        f"{message} "
+        f"total_scanner_opportunities={int(len(opportunities))} "
+        f"total_realized_outcomes={int(len(realized_outcomes))} "
+        f"mismatched_pair_count={int(len(diagnostics))} "
+        f"duplicate_candidate_join_key_count={_duplicate_key_count(opportunities, columns=('required_outcome_key',))} "
+        f"duplicate_realized_outcome_join_key_count={_duplicate_key_count(realized_outcomes, columns=('required_outcome_key',))} "
+        f"mismatch_preview={diagnostics.head(5).to_dict('records')}"
     )
 
 
@@ -1336,20 +1537,8 @@ def evaluate_scanner_effectiveness(
     if len(predictions) != len(working):
         raise ValueError("Prediction export did not preserve row count.")
 
-    working = working.copy()
     predictions = predictions.reset_index(drop=True)
-    working["prediction_id"] = predictions["prediction_id"].values
-    working["prediction_timestamp"] = pd.to_datetime(
-        predictions["prediction_timestamp"],
-        errors="coerce",
-        utc=True,
-    ).dt.tz_localize(None)
-    working["required_outcome_key"] = predictions["required_outcome_key"].astype("string").values
-    working["observation_group_id"] = predictions["observation_group_id"].astype("string").values
-    working["predicted_probability"] = pd.to_numeric(
-        predictions["predicted_probability"],
-        errors="coerce",
-    ).values
+    working = _attach_prediction_contract_fields(working, predictions)
 
     normalized_exclusion_details = _normalize_exclusion_details(exclusion_details)
     available_outcome_keys = set(validated_outcomes["required_outcome_key"].astype("string").tolist())
@@ -1364,8 +1553,13 @@ def evaluate_scanner_effectiveness(
         raise ValueError(f"Missing realized outcomes for {int(len(exclusions))} opportunity rows.")
 
     if drop_missing_outcomes:
+        retained_prediction_ids = set(
+            working.loc[keep_mask, "prediction_id"].astype("string").tolist()
+        )
         working = working.loc[keep_mask].reset_index(drop=True)
-        predictions = predictions.loc[keep_mask].reset_index(drop=True)
+        predictions = predictions.loc[
+            predictions["prediction_id"].astype("string").isin(retained_prediction_ids)
+        ].reset_index(drop=True)
 
     if working.empty:
         calibration_summary, calibration_bins, calibration_observations = _empty_calibration_outputs()
@@ -1406,8 +1600,10 @@ def evaluate_scanner_effectiveness(
         calibration_bins = calibration_artifacts.reliability_bins.reset_index(drop=True)
         calibration_observations = calibration_artifacts.observations.reset_index(drop=True)
 
+        merge_outcomes = validated_outcomes.copy()
+        merge_outcomes["realized_outcome_key"] = merge_outcomes["required_outcome_key"].astype("string")
         observations = working.merge(
-            validated_outcomes,
+            merge_outcomes,
             on="required_outcome_key",
             how="left",
             suffixes=("", "_outcome"),
@@ -1417,9 +1613,19 @@ def evaluate_scanner_effectiveness(
             missing_count = int(observations["outcome_id"].isna().sum())
             raise ValueError(f"Missing realized outcomes for {missing_count} opportunity rows.")
         if not observations["ticker"].eq(observations["ticker_outcome"]).all():
-            raise ValueError("Scanner opportunity / realized outcome ticker mismatch detected.")
+            _raise_outcome_join_integrity_error(
+                message="Scanner opportunity / realized outcome ticker mismatch detected.",
+                opportunities=working,
+                realized_outcomes=validated_outcomes,
+                observations=observations,
+            )
         if not observations["expiration"].eq(observations["expiration_outcome"]).all():
-            raise ValueError("Scanner opportunity / realized outcome expiration mismatch detected.")
+            _raise_outcome_join_integrity_error(
+                message="Scanner opportunity / realized outcome expiration mismatch detected.",
+                opportunities=working,
+                realized_outcomes=validated_outcomes,
+                observations=observations,
+            )
         if not observations["realized_outcome_observed_at"].gt(observations["prediction_timestamp"]).all():
             raise ValueError("realized_outcome_observed_at must be strictly later than prediction_timestamp.")
 

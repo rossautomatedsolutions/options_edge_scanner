@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 
@@ -13,57 +14,62 @@ def _write_trading_foundation_snapshot(
     ticker: str = "SPY",
     snapshot_date: str = "2026-06-15",
     expiration_code: str = "260717",
+    expiration_codes: Sequence[str] | None = None,
 ) -> Path:
     snapshot_dir = root / ticker / "option_snapshot"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     path = snapshot_dir / f"{ticker}_options_snapshot_{snapshot_date}.csv"
     trade_timestamp = f"{snapshot_date}T19:55:00Z"
-    pd.DataFrame(
-        [
-            {
-                "option_symbol": f"{ticker}{expiration_code}C00595000",
-                "implied_volatility": 0.16,
-                "ask_price": 7.2,
-                "bid_price": 6.8,
-                "last_trade_time": trade_timestamp,
-            },
-            {
-                "option_symbol": f"{ticker}{expiration_code}C00600000",
-                "implied_volatility": 0.15,
-                "ask_price": 5.7,
-                "bid_price": 5.3,
-                "last_trade_time": trade_timestamp,
-            },
-            {
-                "option_symbol": f"{ticker}{expiration_code}C00605000",
-                "implied_volatility": 0.14,
-                "ask_price": 4.2,
-                "bid_price": 3.8,
-                "last_trade_time": trade_timestamp,
-            },
-            {
-                "option_symbol": f"{ticker}{expiration_code}P00595000",
-                "implied_volatility": 0.16,
-                "ask_price": 1.7,
-                "bid_price": 1.3,
-                "last_trade_time": trade_timestamp,
-            },
-            {
-                "option_symbol": f"{ticker}{expiration_code}P00600000",
-                "implied_volatility": 0.17,
-                "ask_price": 2.9,
-                "bid_price": 2.5,
-                "last_trade_time": trade_timestamp,
-            },
-            {
-                "option_symbol": f"{ticker}{expiration_code}P00605000",
-                "implied_volatility": 0.18,
-                "ask_price": 4.2,
-                "bid_price": 3.8,
-                "last_trade_time": trade_timestamp,
-            },
-        ]
-    ).to_csv(path, index=False)
+    selected_expiration_codes = list(expiration_codes or [expiration_code])
+    records: list[dict[str, object]] = []
+    for current_expiration_code in selected_expiration_codes:
+        records.extend(
+            [
+                {
+                    "option_symbol": f"{ticker}{current_expiration_code}C00595000",
+                    "implied_volatility": 0.16,
+                    "ask_price": 7.2,
+                    "bid_price": 6.8,
+                    "last_trade_time": trade_timestamp,
+                },
+                {
+                    "option_symbol": f"{ticker}{current_expiration_code}C00600000",
+                    "implied_volatility": 0.15,
+                    "ask_price": 5.7,
+                    "bid_price": 5.3,
+                    "last_trade_time": trade_timestamp,
+                },
+                {
+                    "option_symbol": f"{ticker}{current_expiration_code}C00605000",
+                    "implied_volatility": 0.14,
+                    "ask_price": 4.2,
+                    "bid_price": 3.8,
+                    "last_trade_time": trade_timestamp,
+                },
+                {
+                    "option_symbol": f"{ticker}{current_expiration_code}P00595000",
+                    "implied_volatility": 0.16,
+                    "ask_price": 1.7,
+                    "bid_price": 1.3,
+                    "last_trade_time": trade_timestamp,
+                },
+                {
+                    "option_symbol": f"{ticker}{current_expiration_code}P00600000",
+                    "implied_volatility": 0.17,
+                    "ask_price": 2.9,
+                    "bid_price": 2.5,
+                    "last_trade_time": trade_timestamp,
+                },
+                {
+                    "option_symbol": f"{ticker}{current_expiration_code}P00605000",
+                    "implied_volatility": 0.18,
+                    "ask_price": 4.2,
+                    "bid_price": 3.8,
+                    "last_trade_time": trade_timestamp,
+                },
+            ]
+        )
+    pd.DataFrame(records).to_csv(path, index=False)
     return path
 
 
@@ -192,3 +198,54 @@ def test_historical_effectiveness_eval_cli_preserves_exclusions_when_some_realiz
         "status",
     ].iloc[0] == "missing"
     assert "2026-07-24" in report
+
+
+def test_historical_effectiveness_eval_cli_maps_multi_expiration_snapshot_outcomes_correctly(
+    tmp_path: Path,
+) -> None:
+    historical_data_root = tmp_path / "historical_data"
+    _write_trading_foundation_snapshot(
+        historical_data_root,
+        snapshot_date="2026-06-15",
+        expiration_codes=["260724", "260717"],
+    )
+    eod_dir = historical_data_root / "SPY" / "eod"
+    eod_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"close": 600.0, "t": "2026-06-15T04:00:00Z", "symbol": "SPY"},
+            {"close": 610.0, "t": "2026-07-17T04:00:00Z", "symbol": "SPY"},
+            {"close": 620.0, "t": "2026-07-24T04:00:00Z", "symbol": "SPY"},
+        ]
+    ).to_csv(eod_dir / "SPY_1D.csv", index=False)
+    output_dir = tmp_path / "study_multi_expiration"
+
+    exit_code = main(
+        [
+            "--historical-data-root",
+            str(historical_data_root),
+            "--ticker",
+            "SPY",
+            "--snapshot-date",
+            "2026-06-15",
+            "--realized-as-of",
+            "2026-08-23T12:00:00Z",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    observations = pd.read_csv(output_dir / "effectiveness_observations.csv")
+
+    assert exit_code == 0
+    assert set(observations["expiration"]) == {"2026-07-17", "2026-07-24"}
+    realized_prices_by_expiration = (
+        observations.groupby("expiration", dropna=False)["realized_terminal_underlying_price"]
+        .unique()
+        .map(list)
+        .to_dict()
+    )
+    assert realized_prices_by_expiration == {
+        "2026-07-17": [610.0],
+        "2026-07-24": [620.0],
+    }
