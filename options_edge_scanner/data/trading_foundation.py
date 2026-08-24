@@ -22,6 +22,7 @@ from options_edge_scanner.calibration.materialization import (
     partition_required_outcome_requests_by_realization,
 )
 from options_edge_scanner.calibration.terminal_semantics import (
+    is_us_equity_trading_day,
     market_close_timestamp_for_event_date,
     resolve_terminal_observation_policy,
 )
@@ -72,6 +73,16 @@ class TradingFoundationRealizedOutcomeCoverage:
     eligible_required_observations: pd.DataFrame
     future_required_observations: pd.DataFrame
     realized_as_of: pd.Timestamp
+
+
+@dataclass(frozen=True)
+class TradingFoundationEodCoverageAudit:
+    """Coverage audit for one set of requested Trading Foundation EOD event dates."""
+
+    requested_event_dates: tuple[str, ...]
+    available_event_dates: tuple[str, ...]
+    missing_event_dates: tuple[str, ...]
+    audit_rows: pd.DataFrame
 
 
 def _normalize_date(value: object, *, label: str) -> pd.Timestamp:
@@ -163,6 +174,151 @@ def _load_eod_frame(historical_data_root: str | Path, *, ticker: str) -> pd.Data
     working["t"] = working["t"].dt.tz_localize(None)
     working["session_date"] = working["t"].dt.normalize()
     return working.sort_values("t", kind="stable").reset_index(drop=True)
+
+
+def _load_eod_audit_frame(historical_data_root: str | Path, *, ticker: str) -> pd.DataFrame:
+    """Load one canonical EOD file with raw-versus-normalized audit columns preserved."""
+    path = _eod_path(historical_data_root, ticker=ticker)
+    if not path.is_file():
+        raise FileNotFoundError(f"Trading Foundation EOD file does not exist: {path}")
+
+    frame = pd.read_csv(path)
+    missing = [column for column in ("close", "t") if column not in frame.columns]
+    if missing:
+        joined = ", ".join(missing)
+        raise ValueError(f"Trading Foundation EOD file is missing required columns: {joined}")
+
+    working = frame.copy()
+    working["_close_numeric"] = pd.to_numeric(working["close"], errors="coerce")
+    working["_t_parsed"] = pd.to_datetime(working["t"], errors="coerce", utc=True)
+    parsed_mask = working["_t_parsed"].notna()
+    working["_session_date"] = pd.NaT
+    working.loc[parsed_mask, "_session_date"] = (
+        working.loc[parsed_mask, "_t_parsed"].dt.tz_localize(None).dt.normalize()
+    )
+    working["_row_valid_for_normalized_eod"] = (
+        working["_close_numeric"].notna() & working["_t_parsed"].notna()
+    )
+    return working
+
+
+def audit_trading_foundation_eod_coverage(
+    historical_data_root: str | Path,
+    *,
+    ticker: str,
+    event_dates: Sequence[object],
+) -> TradingFoundationEodCoverageAudit:
+    """Audit whether requested realized-outcome dates are present in canonical EOD coverage."""
+    normalized_event_dates = _normalize_event_dates(event_dates)
+    if not normalized_event_dates:
+        empty = pd.DataFrame(
+            columns=[
+                "event_date",
+                "is_regular_us_equity_trading_day",
+                "raw_rows_for_session_date",
+                "valid_rows_for_session_date",
+                "status",
+                "issue_classification",
+                "previous_available_event_date",
+                "next_available_event_date",
+            ]
+        )
+        return TradingFoundationEodCoverageAudit(
+            requested_event_dates=(),
+            available_event_dates=(),
+            missing_event_dates=(),
+            audit_rows=empty,
+        )
+
+    audit_frame = _load_eod_audit_frame(historical_data_root, ticker=ticker)
+    valid_session_dates = sorted(
+        {
+            pd.Timestamp(value).normalize()
+            for value in audit_frame.loc[audit_frame["_row_valid_for_normalized_eod"], "_session_date"].dropna()
+        }
+    )
+    valid_session_date_strings = {format_date_like(value) for value in valid_session_dates}
+
+    records: list[dict[str, object]] = []
+    available_dates: list[str] = []
+    missing_dates: list[str] = []
+    for event_date in normalized_event_dates:
+        event_date_string = format_date_like(event_date)
+        matching_rows = audit_frame.loc[audit_frame["_session_date"] == event_date].copy()
+        raw_rows_for_session_date = int(len(matching_rows))
+        valid_rows_for_session_date = int(matching_rows["_row_valid_for_normalized_eod"].sum())
+        is_trading_day = bool(is_us_equity_trading_day(event_date))
+        previous_available = next(
+            (format_date_like(value) for value in reversed(valid_session_dates) if value < event_date),
+            "",
+        )
+        next_available = next(
+            (format_date_like(value) for value in valid_session_dates if value > event_date),
+            "",
+        )
+
+        if valid_rows_for_session_date > 0:
+            status = "available"
+            issue_classification = ""
+            available_dates.append(event_date_string)
+        else:
+            status = "missing"
+            missing_dates.append(event_date_string)
+            if raw_rows_for_session_date > 0:
+                issue_classification = "raw_row_present_but_invalid_close_or_timestamp"
+            elif not is_trading_day:
+                issue_classification = "non_trading_day_no_explicit_roll_convention"
+            else:
+                issue_classification = "trading_day_absent_from_canonical_eod"
+
+        records.append(
+            {
+                "event_date": event_date_string,
+                "is_regular_us_equity_trading_day": is_trading_day,
+                "raw_rows_for_session_date": raw_rows_for_session_date,
+                "valid_rows_for_session_date": valid_rows_for_session_date,
+                "status": status,
+                "issue_classification": issue_classification,
+                "previous_available_event_date": previous_available,
+                "next_available_event_date": next_available,
+            }
+        )
+
+    return TradingFoundationEodCoverageAudit(
+        requested_event_dates=tuple(format_date_like(value) for value in normalized_event_dates),
+        available_event_dates=tuple(sorted(set(available_dates))),
+        missing_event_dates=tuple(sorted(set(missing_dates))),
+        audit_rows=pd.DataFrame.from_records(records),
+    )
+
+
+def _format_eod_coverage_audit_message(audit: TradingFoundationEodCoverageAudit) -> str:
+    """Render one concise message describing why requested EOD dates are unavailable."""
+    if not audit.missing_event_dates:
+        return ""
+
+    detail_parts: list[str] = []
+    audit_rows = audit.audit_rows.set_index("event_date", drop=False) if not audit.audit_rows.empty else pd.DataFrame()
+    for event_date in audit.missing_event_dates:
+        row = audit_rows.loc[event_date]
+        detail_parts.append(
+            (
+                f"{event_date}("
+                f"trading_day={bool(row['is_regular_us_equity_trading_day'])}, "
+                f"raw_rows={int(row['raw_rows_for_session_date'])}, "
+                f"valid_rows={int(row['valid_rows_for_session_date'])}, "
+                f"classification={row['issue_classification']}, "
+                f"prev_available={row['previous_available_event_date'] or 'none'}, "
+                f"next_available={row['next_available_event_date'] or 'none'}"
+                f")"
+            )
+        )
+    return (
+        "Trading Foundation EOD coverage is missing realized event dates: "
+        f"{', '.join(audit.missing_event_dates)}. "
+        "Coverage audit: "
+        f"{'; '.join(detail_parts)}"
+    )
 
 
 def list_trading_foundation_snapshot_dates(
@@ -478,11 +634,12 @@ def normalize_trading_foundation_eod_to_realized_underlying(
         available_dates = set(bounded["session_date"].map(format_date_like).tolist())
         missing_dates = sorted(requested_dates.difference(available_dates))
         if missing_dates:
-            joined = ", ".join(missing_dates)
-            raise ValueError(
-                "Trading Foundation EOD coverage is missing realized event dates: "
-                f"{joined}"
+            audit = audit_trading_foundation_eod_coverage(
+                historical_data_root,
+                ticker=normalized_ticker,
+                event_dates=normalized_event_dates,
             )
+            raise ValueError(_format_eod_coverage_audit_message(audit))
 
     acquired_timestamp = (
         format_utc_timestamp(acquired_at)

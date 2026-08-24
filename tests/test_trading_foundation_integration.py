@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from options_edge_scanner.calibration.materialization import (
     materialize_realized_outcomes_from_snapshot_manifest,
@@ -14,6 +15,7 @@ from options_edge_scanner.data.historical_snapshot_loader import load_historical
 from options_edge_scanner.data.loader import validate_option_quote_frame
 from options_edge_scanner.data.trading_foundation import (
     TRADING_FOUNDATION_DAY_PRECISION_POLICY,
+    audit_trading_foundation_eod_coverage,
     build_trading_foundation_snapshot_id,
     write_trading_foundation_realized_underlying,
     write_trading_foundation_snapshot_manifest,
@@ -401,3 +403,110 @@ def test_trading_foundation_realized_underlying_manifest_export_excludes_future_
     written = pd.read_csv(output_path)
     assert observations["event_date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-07-17"]
     assert written["event_date"].tolist() == ["2026-07-17"]
+
+
+def test_trading_foundation_eod_coverage_audit_classifies_missing_trading_days_and_invalid_rows(
+    tmp_path: Path,
+) -> None:
+    historical_data_root = tmp_path / "historical_data"
+    _write_trading_foundation_eod(
+        historical_data_root,
+        rows=[
+            {
+                "close": 609.0,
+                "high": 612.0,
+                "low": 608.0,
+                "n": 1,
+                "open": 608.5,
+                "t": "2025-07-10T04:00:00Z",
+                "volume": 100,
+                "vw": 609.0,
+                "symbol": "SPY",
+            },
+            {
+                "close": "not-a-number",
+                "high": 612.0,
+                "low": 608.0,
+                "n": 1,
+                "open": 608.5,
+                "t": "2025-07-18T04:00:00Z",
+                "volume": 100,
+                "vw": 609.0,
+                "symbol": "SPY",
+            },
+            {
+                "close": 611.0,
+                "high": 613.0,
+                "low": 609.0,
+                "n": 1,
+                "open": 610.0,
+                "t": "2025-07-21T04:00:00Z",
+                "volume": 100,
+                "vw": 611.0,
+                "symbol": "SPY",
+            },
+        ],
+    )
+
+    audit = audit_trading_foundation_eod_coverage(
+        historical_data_root,
+        ticker="SPY",
+        event_dates=["2025-07-11", "2025-07-18"],
+    )
+
+    assert audit.available_event_dates == ()
+    assert audit.missing_event_dates == ("2025-07-11", "2025-07-18")
+    row_by_date = audit.audit_rows.set_index("event_date")
+    assert bool(row_by_date.loc["2025-07-11", "is_regular_us_equity_trading_day"])
+    assert int(row_by_date.loc["2025-07-11", "raw_rows_for_session_date"]) == 0
+    assert row_by_date.loc["2025-07-11", "issue_classification"] == "trading_day_absent_from_canonical_eod"
+    assert int(row_by_date.loc["2025-07-18", "raw_rows_for_session_date"]) == 1
+    assert int(row_by_date.loc["2025-07-18", "valid_rows_for_session_date"]) == 0
+    assert (
+        row_by_date.loc["2025-07-18", "issue_classification"]
+        == "raw_row_present_but_invalid_close_or_timestamp"
+    )
+
+
+def test_trading_foundation_realized_underlying_export_surfaces_coverage_audit_details_for_missing_dates(
+    tmp_path: Path,
+) -> None:
+    historical_data_root = tmp_path / "historical_data"
+    _write_trading_foundation_eod(
+        historical_data_root,
+        rows=[
+            {
+                "close": 610.0,
+                "high": 612.0,
+                "low": 608.0,
+                "n": 1,
+                "open": 609.0,
+                "t": "2026-06-17T04:00:00Z",
+                "volume": 100,
+                "vw": 610.0,
+                "symbol": "SPY",
+            },
+            {
+                "close": 612.0,
+                "high": 614.0,
+                "low": 610.0,
+                "n": 1,
+                "open": 611.0,
+                "t": "2026-06-22T04:00:00Z",
+                "volume": 100,
+                "vw": 612.0,
+                "symbol": "SPY",
+            },
+        ],
+    )
+
+    with pd.option_context("display.max_colwidth", 200):
+        with pytest.raises(ValueError, match="2026-06-18"):
+            write_trading_foundation_realized_underlying(
+                historical_data_root,
+                ticker="SPY",
+                start_date="2026-06-18",
+                end_date="2026-06-18",
+                output_path=tmp_path / "tf_realized_underlying.csv",
+                acquired_at="2026-08-24T12:00:00Z",
+            )

@@ -272,3 +272,13 @@ def test_realized_underlying_contract_rejects_non_trading_day_event_dates() -> N
 
     with pytest.raises(ValueError, match="not a regular US equity trading day"):
         validate_realized_underlying_frame(pd.DataFrame([row]))
+
+
+def test_realized_underlying_contract_accepts_2026_06_18_holiday_adjusted_thursday_expiration() -> None:
+    frame = pd.DataFrame([_make_realized_underlying_row(event_date="2026-06-18")])
+
+    validated = validate_realized_underlying_frame(frame)
+
+    assert len(validated) == 1
+    assert validated.loc[0, "event_date"].strftime("%Y-%m-%d") == "2026-06-18"
+    assert validated.loc[0, "observed_at"].strftime("%Y-%m-%dT%H:%M:%S") == "2026-06-18T20:00:00"

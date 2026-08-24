@@ -1,30 +1,31 @@
 # Project Technical Handoff
 
-Last validated: 2026-08-23
+Last validated: 2026-08-24
 Repository: `C:\GitHub\options_edge_scanner`
 Validation basis:
 
 - core package inspection across `options_edge_scanner/`, `docs/`, `tests/`, `notebooks/`, and selected `outputs/`
-- recent git history through the current 2026-08-23 Trading Foundation validation hardening changes
-- `pytest -q` on 2026-08-23: `158 passed in 19.12s`
-- `python -m compileall options_edge_scanner run_scanner.py` on 2026-08-23: passed
+- recent git history through the current 2026-08-24 Trading Foundation EOD audit hardening changes
+- `pytest -q` on 2026-08-24: `161 passed in 19.18s`
+- `python -m compileall options_edge_scanner run_scanner.py` on 2026-08-24: passed
 - practical artifact checks on 2026-08-17:
   - calibration export from `outputs/historical_snapshots/spy_candidates.csv` succeeded with 40 exported predictions
   - calibration export from `outputs/offline_scan_sample.csv` failed because the artifact is missing current calibration-export columns and `snapshot_id`
   - scanning `outputs/yahoo_option_chains/SPY_2026-06-15_yahoo.csv` failed because the repo-local Yahoo sidecar is missing the now-required `snapshot_id`
 
-## 0. Addendum - Trading Foundation Historical Adapter (2026-08-23)
+## 0. Addendum - Trading Foundation Historical Adapter (2026-08-24)
 
 This addendum updates the historical-options data assessment without changing the 2026-08-17 full-repo validation stamp above.
 
-Targeted validation on Sunday, August 23, 2026:
+Targeted validation on Monday, August 24, 2026:
 
-- `pytest -q tests/test_trading_foundation_integration.py`: `5 passed`
+- `pytest -q tests/test_trading_foundation_integration.py`: `7 passed`
 - `pytest -q tests/test_realized_outcome_materialization.py`: `6 passed`
-- `pytest -q`: `158 passed`
+- `pytest -q tests/test_realized_underlying.py`: `12 passed`
+- `pytest -q`: `161 passed`
 - `python -m compileall options_edge_scanner run_scanner.py`: passed
 
-New capability added on Sunday, August 23, 2026:
+New capability added on Sunday, August 23, 2026 and extended on Monday, August 24, 2026:
 
 - raw canonical Trading Foundation `historical_data/<TICKER>/option_snapshot/<TICKER>_options_snapshot_YYYY-MM-DD.csv` files can now be consumed through the repo's existing strict historical-manifest path without copying the chain CSVs
 - new CLI `python -m options_edge_scanner.cli.trading_foundation_snapshot_manifest` writes manifest rows plus metadata sidecars that point at those raw snapshot files
@@ -34,6 +35,8 @@ New capability added on Sunday, August 23, 2026:
 - the probability and EV layers now require finite positive spot, strike, IV, and time-to-expiration inputs so malformed contracts are rejected explicitly instead of surfacing later as `Estimated probability must be finite`
 - manifest-derived Trading Foundation realized-underlying export now supports `--manifest` and `--realized-as-of`, so the workflow can export exact already-realized expiration dates instead of guessing a continuous range
 - realized-outcome materialization now partitions required expirations into eligible versus future sets and excludes future expirations after the explicit cutoff instead of failing because their outcomes do not exist yet
+- Trading Foundation EOD export now runs a per-date coverage audit when required event dates are missing, distinguishing absent trading-day rows from rows present in the raw file but invalid after `close` / `t` normalization
+- June 18, 2026 is now covered by regression tests as a valid SPY expiration outcome date under the existing explicit policy despite the Friday, June 19, 2026 Juneteenth market holiday
 
 Current limitation after the adapter build:
 
@@ -41,6 +44,19 @@ Current limitation after the adapter build:
 - the canonical main-machine root from the validation task, `C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data`, is not mounted in this environment, so the exact May 27, 2025 through May 30, 2025 rerun could not be repeated here after the code fix
 - the inspected sandbox Trading Foundation schema summary shows no guaranteed uniform snapshot-level timestamp column in `option_snapshot/`; when a raw file lacks one, the adapter emits day-precision `quote_observed_at` metadata derived from the file date rather than inventing intraday event-time precision
 - SPY expiration-close outcome semantics remain the only explicit realized-outcome policy supported by this repo
+
+Real main-machine blocker narrowed further after the successful 4/4 historical scan validation:
+
+- the scanner integration itself is now validated on the real main machine for the May 27, 2025 through May 30, 2025 snapshot window
+- the remaining blocker is canonical Trading Foundation SPY EOD coverage for three required realized event dates: `2025-07-11`, `2025-07-18`, and `2026-06-18`
+- current interpretation:
+  - `2025-07-11` is a normal Friday trading day and valid SPY weekly expiration candidate
+  - `2025-07-18` is a normal Friday trading day and valid SPY standard monthly expiration date
+  - `2026-06-18` is a normal Thursday trading day immediately before the Friday, June 19, 2026 Juneteenth holiday and is consistent with the existing weekly-options holiday convention that EOW ETF series expire on Thursday when Friday is a holiday
+- therefore the remaining root cause is either:
+  - a genuine canonical Trading Foundation EOD data gap for those dates, or
+  - an upstream Trading Foundation ingestion/data-quality gap where a raw row exists but its `close` or `t` value is invalid
+- there is no evidence in current repo code that these three dates should be silently rolled to a different session
 
 ## 1. Executive Summary
 

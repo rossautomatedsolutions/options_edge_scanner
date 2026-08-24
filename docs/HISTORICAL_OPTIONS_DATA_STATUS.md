@@ -1,6 +1,6 @@
 # Historical Options Data Status
 
-Date: Sunday, August 23, 2026
+Date: Monday, August 24, 2026
 Repository: `C:\GitHub\options_edge_scanner`
 Canonical upstream root for main-machine validation: `C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data`
 
@@ -126,12 +126,13 @@ Supporting loader upgrade:
 - `load_option_quotes(...)` now understands Trading Foundation `bid_price` / `ask_price` aliases
 - `load_option_quotes(...)` now parses OCC-style `option_symbol` values to recover ticker, expiration, strike, and call/put type when raw files omit explicit normalized columns
 
-Historical-validation hardening added on Sunday, August 23, 2026:
+Historical-validation hardening added on Sunday, August 23, 2026 and extended on Monday, August 24, 2026:
 
 - quote and spread quality filters now reject non-finite Trading Foundation numeric inputs such as missing IV before they can poison otherwise usable snapshots
 - the probability and EV layers now require finite positive spot, strike, IV, and time-to-expiration inputs instead of propagating `NaN` values into `Estimated probability must be finite`
 - realized-underlying export can now derive exact required expiration dates directly from a strict snapshot manifest via `--manifest`
 - realized-outcome materialization now partitions already-realized versus future expirations using `--realized-as-of`, so future-dated contracts after Sunday, August 23, 2026 no longer fail historical calibration materialization
+- Trading Foundation EOD export now emits per-date coverage audit details so missing dates can be classified as absent trading days versus rows dropped for invalid `close`/`t` values
 
 ## Tests Updated
 
@@ -148,14 +149,17 @@ Covered behaviors:
 - Trading Foundation-shaped snapshots with one non-finite IV contract now skip the bad contract without failing the whole snapshot
 - manifest-driven Trading Foundation realized-underlying export emits only already-realized expiration dates as of Sunday, August 23, 2026
 - realized-outcome materialization excludes future expirations instead of treating them as missing realized-underlying observations
+- Trading Foundation EOD coverage audits distinguish `trading_day_absent_from_canonical_eod` from `raw_row_present_but_invalid_close_or_timestamp`
+- June 18, 2026 is explicitly validated as an acceptable SPY expiration outcome date under the current policy even though Friday, June 19, 2026 is the Juneteenth market holiday
 
 ## Sandbox Validation Result
 
-Validated in the sandbox on Sunday, August 23, 2026:
+Validated in the sandbox on Monday, August 24, 2026:
 
-- `pytest -q tests/test_trading_foundation_integration.py`: `5 passed`
+- `pytest -q tests/test_trading_foundation_integration.py`: `7 passed`
 - `pytest -q tests/test_realized_outcome_materialization.py`: `6 passed`
-- `pytest -q`: `158 passed`
+- `pytest -q tests/test_realized_underlying.py`: `12 passed`
+- `pytest -q`: `161 passed`
 - `python -m compileall options_edge_scanner run_scanner.py`: passed
 
 Observed sandbox limitation:
@@ -163,6 +167,24 @@ Observed sandbox limitation:
 - `C:\GitHub\Trading_Foundation\historical_data\SPY` in the sandbox contains `schema_summary.json`, but not populated `option_snapshot/` or `eod/` folders
 - `C:\Users\RAS\OneDrive\RAS\Trading\Live\Trading_Foundation\historical_data` does not exist in this environment, so the real May 27, 2025 through May 30, 2025 rerun still has to happen on the actual main machine where the canonical store is mounted
 - therefore schema integration and the code fix are validated locally, but production coverage and the exact May 2025 candidate counts remain a main-machine question
+
+## Main-Machine EOD Audit Finding
+
+The real main-machine validation reported one narrowed Trading Foundation EOD blocker for manifest-derived SPY expiration outcomes as of the explicit cutoff `2026-08-23T12:00:00Z`:
+
+- missing realized event dates: `2025-07-11`, `2025-07-18`, `2026-06-18`
+
+Current audit interpretation:
+
+- `2025-07-11`: regular Friday trading day, valid SPY weekly expiration candidate, not a market-calendar edge case
+- `2025-07-18`: regular Friday trading day, valid SPY standard monthly expiration date, not a market-calendar edge case
+- `2026-06-18`: regular Thursday trading day immediately preceding the Friday, June 19, 2026 Juneteenth holiday; this is consistent with the existing weekly-options holiday convention that end-of-week ETF series expire on Thursday when Friday is a holiday
+
+Implication:
+
+- if these dates are not present in canonical `eod/SPY_1D.csv`, the remaining blocker is upstream Trading Foundation EOD coverage or ingestion rather than an Options Edge Scanner expiration-roll rule
+- if a raw `SPY_1D.csv` row exists for one of those dates but is dropped because `close` or `t` is invalid, the remaining blocker is still upstream data quality rather than a silent calendar roll inside this repo
+- no forward-fill or arbitrary last-trading-session roll has been added in this repo
 
 ## Main-Machine Validation Package
 
