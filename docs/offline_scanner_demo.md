@@ -4,17 +4,19 @@ The canonical public-demo notebook is [01_offline_scanner_demo.ipynb](../noteboo
 
 ## Setup and launch
 
-Run these commands from the repository root in PowerShell:
+Install the project requirements once:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m notebook notebooks\01_offline_scanner_demo.ipynb
+py -m pip install -r requirements.txt
 ```
 
-In the notebook menu, choose **Kernel → Restart Kernel and Run All Cells**. Every cell should finish without editing a path, accessing the network, or creating a persistent output artifact.
+Then launch the notebook from the repository root:
+
+```powershell
+py -m jupyter lab notebooks/01_offline_scanner_demo.ipynb
+```
+
+In the notebook menu, choose **Kernel → Restart Kernel and Run All Cells**. The bootstrap supports kernels started from either the repository root or the `notebooks` directory; it finds the root through `options_edge_scanner/config.py` before importing the package. No editable install or `PYTHONPATH` setting is required.
 
 For a command-line pre-recording check, use:
 
