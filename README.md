@@ -18,8 +18,8 @@ It does not implement:
 
 Current repo-local status is summarized in [docs/offline_scanner_readiness_review.md](docs/offline_scanner_readiness_review.md).
 The latest offline gap audit and main-machine gate live in [docs/offline_gap_audit_2026-08-17.md](docs/offline_gap_audit_2026-08-17.md).
-The maintained demo/runbook lives in [docs/offline_scanner_demo.md](docs/offline_scanner_demo.md).
-The notebook walkthrough lives in [notebooks/01_offline_scanner_demo.ipynb](notebooks/01_offline_scanner_demo.ipynb).
+The maintained public-demo recording guide lives in [docs/offline_scanner_demo.md](docs/offline_scanner_demo.md).
+The notebook walkthrough lives in [notebooks/01_offline_scanner_demo.ipynb](notebooks/01_offline_scanner_demo.ipynb); it uses a committed synthetic fixture and the maintained config-driven scanner API, so it is deterministic and offline-safe.
 The current Trading Foundation historical-data integration status lives in [docs/HISTORICAL_OPTIONS_DATA_STATUS.md](docs/HISTORICAL_OPTIONS_DATA_STATUS.md).
 
 ## What Is Implemented

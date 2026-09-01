@@ -1,116 +1,49 @@
-# Offline Scanner Demo
+# Options Edge Scanner Public-Demo Recording Guide
 
-This runbook is a small demo checkpoint for the committed offline scanner workflow.
+The canonical public-demo notebook is [01_offline_scanner_demo.ipynb](../notebooks/01_offline_scanner_demo.ipynb). It runs entirely offline against the committed synthetic `XYZ` fixture and calls the production `run_scan(...)` API. It is a research walkthrough, not financial advice, an alert, a recommendation, or a brokerage workflow.
 
-The workflow is:
+## Setup and launch
 
-- offline only
-- research/demo only
-- not financial advice
-- not a live signal engine
-- not a brokerage or order-routing workflow
-
-`offline_scan` reads a local option-chain file, applies conservative guardrails, ranks debit-spread candidates, and writes a local CSV output without fetching live data.
-When provenance is available in the input file or sidecar metadata, the scanner also carries that provenance into the ranked output and rejects `as_of` dates that predate the observed snapshot unless `--allow-unsafe-as-of` is passed.
-For stricter multi-snapshot research, `historical_snapshot_scan` reads one explicit snapshot manifest and refuses any snapshot whose option-chain and spot provenance cannot prove they came from the same logical observation timestamp.
-
-## What The Default Guardrails Do
-
-The default offline scan applies conservative quality checks intended to keep demo output more realistic:
-
-- filters out legs that are too far from spot using `--max-abs-moneyness-pct 0.25`
-- filters out spreads where debit is too large relative to width using `--max-debit-fraction 0.67`
-- filters out legs with very wide quotes using `--max-bid-ask-spread-pct 0.25`
-- optionally applies `--min-volume`, `--min-open-interest`, `--min-abs-delta`, and `--max-abs-delta` when those columns exist in the local file
-
-If the input file does not contain `underlying_price`, pass `--spot` explicitly so the run remains offline and deterministic.
-
-## Demo Commands
-
-Use the existing local Yahoo chain CSV:
+Run these commands from the repository root in PowerShell:
 
 ```powershell
-$env:PYTHONPATH='.'
-$INPUT_CSV = 'outputs\yahoo_option_chains\SPY_2026-07-17_yahoo.csv'
-$OUTPUT_CSV = 'outputs\offline_scan_smoke\SPY_2026-07-17_ranked.csv'
-$AS_OF = '2026-06-13'
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m notebook notebooks\01_offline_scanner_demo.ipynb
 ```
 
-The safest pattern is:
+In the notebook menu, choose **Kernel → Restart Kernel and Run All Cells**. Every cell should finish without editing a path, accessing the network, or creating a persistent output artifact.
 
-- if the input file already carries `quote_observed_at`, use an `--as-of` date on or after that observed date
-- if you pass an intraday timestamp such as `2026-06-13T10:00:00Z`, the scanner checks it against the full observed timestamp rather than only the calendar day
-- if the input file came from the Yahoo ingestion utility and already has provenance, omitting `--as-of` will make the scanner default to the observed snapshot date instead of the current day
-- if you override spot with `--spot`, also pass `--spot-observed-at` for safe provenance, or combine the override with `--allow-unsafe-as-of` for intentionally ad hoc runs
-- use `--allow-unsafe-as-of` only for intentionally ad hoc runs against legacy files
-
-Confirm the input file exists:
+For a command-line pre-recording check, use:
 
 ```powershell
-Get-ChildItem $INPUT_CSV
+jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=30 notebooks\01_offline_scanner_demo.ipynb
 ```
 
-Run the offline scanner:
+## Suggested 2–3 minute narration
 
-```powershell
-python -m options_edge_scanner.cli.offline_scan `
-  --input $INPUT_CSV `
-  --output $OUTPUT_CSV `
-  --as-of $AS_OF
-```
+1. **0:00–0:20 — purpose and boundary.** Explain that this is an offline, research-only scanner for debit vertical spreads. The output is an inspectable ranking, never a trade instruction.
+2. **0:20–0:45 — input universe.** Point out the eight-row, committed synthetic fixture. It includes bid/ask, IV, spot, and quote/spot provenance so the real safety checks can run. Call out that it is synthetic demonstration data, not a live market snapshot.
+3. **0:45–1:20 — production pipeline.** Run the scanner cell. Describe the stage-count table: validation/provenance, quote filters, vertical-spread generation, execution and quality checks, DTE eligibility, and the final shortlist. Mention that the notebook calls `run_scan(...)` directly and does not recreate a scoring formula.
+4. **1:20–2:05 — ranked output and top row.** Read the compact output columns: spread geometry, quoted versus execution-adjusted debit, model probability, execution-adjusted EV, liquidity, and rank. Explain that the top row earns rank 1 from the scanner's reported ranking score, while the higher adjusted debit exposes the execution assumption.
+5. **2:05–2:30 — auditability and limits.** Show the audit table: the run date, model version, counts, warnings, and the explicit absence of realized outcomes. Close with: “The scanner turns a broad options universe into a structured, inspectable shortlist while preserving the evidence, execution assumptions, exclusions, and data limitations behind each ranking.”
 
-Run the strict historical manifest scanner:
+## Limitations to state on camera
 
-```powershell
-python -m options_edge_scanner.cli.historical_snapshot_scan `
-  --manifest path\to\strict_historical_manifest.csv `
-  --output outputs\historical_snapshots\ranked_candidates.csv `
-  --summary-output outputs\historical_snapshots\scan_summary.csv
-```
+- The notebook data is a small synthetic test fixture. It demonstrates contracts and pipeline behavior, not market performance.
+- `lognormal_breakeven` is the current baseline probability model; it is not an empirically calibrated alpha model.
+- Execution adjustments and liquidity diagnostics are conservative heuristics, not historical fill simulation.
+- No realized outcomes are included in this fixture. The repository tracks outcomes separately for evaluation, but its accessible historical coverage is insufficient to establish effectiveness. Missing outcomes are not silently counted as wins, losses, or zeros.
+- The repository has no live data fetch, order placement, brokerage authentication, live trading, or full lifecycle options backtest in this demo path.
 
-Run the offline scanner when the file lacks `underlying_price`:
+## Maintained scanner path
 
-```powershell
-python -m options_edge_scanner.cli.offline_scan `
-  --input $INPUT_CSV `
-  --output $OUTPUT_CSV `
-  --as-of $AS_OF `
-  --spot 741.75
-```
+The notebook uses these production components without duplicating their logic:
 
-Preview the first 10 ranked rows:
+- `options_edge_scanner.data.loader.load_option_quotes(...)`
+- `options_edge_scanner.scanner.engine.run_scan(...)`
+- `ScannerConfig` and the machine-readable scan-report contract
 
-```powershell
-Import-Csv $OUTPUT_CSV | Select-Object -First 10
-```
-
-Preview the provenance fields explicitly:
-
-```powershell
-Import-Csv $OUTPUT_CSV | Select-Object -First 5 as_of, quote_observed_at, underlying_price_observed_at, underlying_price_source
-```
-
-Group the ranked output by `option_type` and `spread_type`:
-
-```powershell
-Import-Csv $OUTPUT_CSV |
-  Group-Object option_type, spread_type |
-  Select-Object Count, Name
-```
-
-Check git status after the run:
-
-```powershell
-git status --short
-```
-
-## Output Expectations
-
-The ranked CSV is a research/demo artifact. It is useful for inspecting:
-
-- which spread types survived the default guardrails
-- whether the snapshot is dominated by calls or puts
-- whether a particular spot snapshot produces lopsided rankings even when both sides survive filtering
-
-The output should be reviewed as offline ranking output only, not as a recommendation, alert, or executable signal.
-Even the strict historical manifest path is still a snapshot-collection research tool, not a full historical backtest engine.
+The run writes its production CSV and JSON report to a temporary local directory, then displays compact views of their actual contents. Use `python -m options_edge_scanner.cli.offline_scan` when a persistent local CSV/JSON artifact is needed outside the notebook.
