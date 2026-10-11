@@ -365,3 +365,33 @@ def test_exact_lognormal_ev_matches_put_spread_expectation() -> None:
 
     assert result["ev_method"] == "lognormal_vertical_exact"
     assert math.isclose(result["expected_value"], expected_value, rel_tol=0, abs_tol=1e-12)
+
+
+@pytest.mark.parametrize("spread_type", ["bull_call_debit", "bear_put_debit", "bull_put_credit", "bear_call_credit"])
+@pytest.mark.parametrize("p", [0.0, 0.6, 1.0])
+def test_supported_scalar_matches_vector(spread_type, p):
+    spread = {"spread_type": spread_type, "strike_lower": 100, "strike_upper": 110,
+              "cost": 3, "max_profit": 7, "credit": 7, "max_loss": 3}
+    assert calculate_expected_value(spread, probability=p) == calculate_expected_value(
+        spread, probability_weights={"win": p, "loss": 1-p})
+
+
+@pytest.mark.parametrize("p", [float("nan"), float("inf"), -float("inf"), -.1, 1.1])
+@pytest.mark.parametrize("mode", ["supported_scalar", "generic_scalar", "win", "loss"])
+def test_nonfinite_or_out_of_range_probability_refused(p, mode):
+    spread = {"spread_type": "bull_call_debit", "strike_lower": 100, "strike_upper": 110,
+              "cost": 3, "max_profit": 7}
+    if mode == "generic_scalar":
+        spread = {"payoff": 7, "loss": 3}
+    kwargs = {"probability": p} if mode.endswith("scalar") else {
+        "probability_weights": {"win": p if mode == "win" else .5, "loss": p if mode == "loss" else .5}}
+    with pytest.raises(ValueError):
+        calculate_expected_value(spread, **kwargs)
+
+
+def test_weight_mode_precedence_and_finite_alias_fallback():
+    spread = {"spread_type": "bear_call_credit", "strike_lower": 100, "strike_upper": 110,
+              "credit": float("nan"), "max_profit": 7, "max_loss": 3}
+    result = calculate_expected_value(spread, probability=float("nan"),
+                                      probability_weights={"win": .6, "loss": .4})
+    assert math.isclose(result["expected_value"], .6*7-.4*3-TRANSACTION_COST)

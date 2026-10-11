@@ -62,6 +62,9 @@ def _normalize_win_loss_probabilities(probability_weights: Mapping[str, Any]) ->
         )
     )
 
+    if not math.isfinite(win) or not math.isfinite(loss):
+        raise ValueError("win and loss probabilities must be finite")
+
     if win < -_EPSILON or win > 1.0 + _EPSILON:
         raise ValueError("win probability must be in [0, 1]")
     if loss < -_EPSILON or loss > 1.0 + _EPSILON:
@@ -330,7 +333,7 @@ def _build_exact_vertical_ev(spread_row: Mapping[str, Any]) -> dict[str, float |
 def _binary_expected_value(spread_row: Mapping[str, Any], probability: float) -> tuple[float, float]:
     """Backward-compatible binary EV approximation for generic opportunities."""
     p = float(probability)
-    if p < -_EPSILON or p > 1.0 + _EPSILON:
+    if not math.isfinite(p) or p < -_EPSILON or p > 1.0 + _EPSILON:
         raise ValueError("probability must be in [0, 1]")
     p = min(max(p, 0.0), 1.0)
 
@@ -365,13 +368,13 @@ def calculate_expected_value(
 
     spread_type = str(spread_row.get("spread_type", "")).strip().lower()
     if spread_type in _SUPPORTED_SPREAD_TYPES:
-        if probability_weights is None:
-            raise ValueError(
-                "probability_weights is required for supported spread types; "
-                "expected win/loss probabilities"
-            )
-
-        probs = _normalize_win_loss_probabilities(probability_weights)
+        if probability_weights is not None:
+            probs = _normalize_win_loss_probabilities(probability_weights)
+        elif probability is not None:
+            p = float(probability)
+            probs = _normalize_win_loss_probabilities({"win": p, "loss": 1.0 - p})
+        else:
+            raise ValueError("probability or probability_weights is required for supported spread types")
         profile = _extract_spread_payoff_profile(spread_row)
 
         max_profit = float(profile["max_profit"])
